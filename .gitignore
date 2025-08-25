@@ -1,0 +1,21 @@
+# Environment variables (contains secrets)
+.env
+
+# Debug and test files
+debug_log
+test_*.js
+test_*.json
+*_test_*.txt
+page_*_contents*.txt
+
+# Dependencies
+node_modules/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.0] - 2025-08-25
+
+### Added
+- New `get_page_previews` tool: fetch up to 10 URLs in parallel and return previews (lines 1-N, default 500)
+- New `get_page_content_range` tool: fetch specific line ranges from single URL (max 5000 lines per request)
+- 10-minute in-memory cache for page contents (`PAGE_CACHE_TTL_MS`)
+- HTTP transport mode for easier integration (`TRANSPORT_TYPE=http`)
+- Support for Authorization: Bearer token authentication in HTTP mode
+- Debug logging to file with timestamps (`DEBUG_LOG_TO_FILE=true`)
+- Automatic line length processing: lines > 5000 chars are split into multiple lines
+
+### Changed
+- Default toolset now exposes `get_page_previews` and `get_page_content_range` instead of `scrape_as_markdown`
+- All cached content has max 5000 characters per line for better context window management
+
+### Removed
+- `scrape_as_markdown` tool (replaced by new caching tools)
+
 ## [2.0.0] - 2025-05-26
 
 ### Changed

@@ -184,6 +184,41 @@ https://mcp.brightdata.com/mcp?token=YOUR_API_TOKEN_HERE
 }
 ```
 
+## 🌐 Self-hosted HTTP Mode
+
+For easier integration or testing, you can run the server in HTTP mode (similar to the hosted version):
+
+```bash
+# Start HTTP server
+export TRANSPORT_TYPE=http
+export HTTP_PORT=3000
+export PRO_MODE=true
+export DEBUG_LOG_TO_FILE=true  # Optional: log requests/responses to debug_log file
+node server.js
+```
+
+**Usage:**
+- **URL**: `http://localhost:3000/mcp`
+- **Authentication**: Send `Authorization: Bearer YOUR_API_TOKEN` header
+- **Pro mode**: Add `?pro_mode=true` to URL (or set `PRO_MODE=true` env var)
+
+**Example with curl:**
+```bash
+# Initialize connection
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer your_api_token" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "clientInfo": {"name": "test", "version": "1.0.0"}}}'
+
+# Call tools
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer your_api_token" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "get_page_previews", "arguments": {"urls": ["https://example.com"]}}}'
+```
+
 ## 🔧 Available Tools
 
 > **Important:** Pro mode **is not included in the free tier** and will incur additional charges. If you choose to use **Pro mode**, you’ll gain access to all 60 tools but please be aware of the associated costs.
@@ -192,7 +227,7 @@ To enable **Pro mode**, simply add `"PRO_MODE"=true` to your enviroment variable
 
 [List of Available Tools](https://github.com/brightdata-com/brightdata-mcp/blob/main/assets/Tools.md)
 
-**Note**: By default, only basic tools (`search_engine` and `scrape_as_markdown`) are exposed. To access all tools including browser automation and web data extraction, enable `PRO_MODE` in your configuration (see Account Setup section).
+**Note**: By default, the basic tools are `search_engine`, `get_page_previews`, and `get_page_content_range`. To access all tools including browser automation and web data extraction, enable `PRO_MODE` in your configuration (see Account Setup section). The new caching tools use a 10-minute in-memory cache (configurable via `PAGE_CACHE_TTL_MS`).
 
 ## ⚠️ Security Best Practices
 
@@ -211,7 +246,7 @@ Instead:
 
 3. Enable Pro Mode (for access to all tools):
    - Set `PRO_MODE=true` in your environment configuration to access browser automation, structured data extraction, and all available tools
-   - Default: `false` (only exposes `search_engine` and `scrape_as_markdown` tools)
+   - Default: `false` (only exposes `search_engine`, `get_page_previews`, and `get_page_content_range` tools)
    - See the advanced configuration example above for implementation details
 
 4. Configure rate limiting:

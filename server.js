@@ -5,13 +5,17 @@ import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
 import {createRequire} from 'node:module';
+import {appendFileSync} from 'fs';
 const require = createRequire(import.meta.url);
 const package_json = require('./package.json');
-const api_token = process.env.API_TOKEN;
+let api_token = process.env.API_TOKEN;
 const unlocker_zone = process.env.WEB_UNLOCKER_ZONE || 'mcp_unlocker';
 const browser_zone = process.env.BROWSER_ZONE || 'mcp_browser';
 const pro_mode = process.env.PRO_MODE === 'true';
-const pro_mode_tools = ['search_engine', 'scrape_as_markdown'];
+const http_port = parseInt(process.env.HTTP_PORT || '3000', 10);
+const transport_type = process.env.TRANSPORT_TYPE || 'stdio'; // 'stdio' or 'http'
+const debug_log_to_file = process.env.DEBUG_LOG_TO_FILE === 'true';
+const pro_mode_tools = ['search_engine', 'get_page_previews', 'get_page_content_range'];
 function parse_rate_limit(rate_limit_str) {
     if (!rate_limit_str) 
         return null;
@@ -32,12 +36,15 @@ function parse_rate_limit(rate_limit_str) {
 
 const rate_limit_config = parse_rate_limit(process.env.RATE_LIMIT);
 
-if (!api_token)
+if (!api_token && transport_type !== 'http')
     throw new Error('Cannot run MCP server without API_TOKEN env');
+    
+if (transport_type === 'http' && !api_token)
+    console.error('HTTP mode: API token will be extracted from Authorization header');
 
-const api_headers = ()=>({
+const api_headers = (context_token = null)=>({
     'user-agent': `${package_json.name}/${package_json.version}`,
-    authorization: `Bearer ${api_token}`,
+    authorization: `Bearer ${context_token || api_token}`,
 });
 
 function check_rate_limit(){
@@ -115,13 +122,158 @@ async function ensure_required_zones(){
     }
 }
 
-await ensure_required_zones();
+// Only ensure zones in stdio mode (HTTP mode will do this per-request)
+if (transport_type !== 'http') {
+    await ensure_required_zones();
+}
+
+
 
 let server = new FastMCP({
     name: 'Bright Data',
     version: package_json.version,
+    authenticate: transport_type === 'http' ? (request) => {
+        // Always allow requests through, but capture auth info
+        const authHeader = request.headers.authorization;
+        
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+            api_token = token; // Update global token
+            return {
+                token: token,
+                headers: request.headers,
+                authenticated: true,
+            };
+        }
+        
+        // No auth provided - allow initialize but mark as unauthenticated
+        return {
+            token: null,
+            headers: request.headers,
+            authenticated: false,
+        };
+    } : undefined,
 });
 let debug_stats = {tool_calls: {}, session_calls: 0, call_timestamps: []};
+
+// --- In-memory page cache (10 minutes by default) ---
+const PAGE_CACHE_TTL_MS = parseInt(process.env.PAGE_CACHE_TTL_MS || '600000', 10);
+const pageCache = new Map(); // url -> { content: string, fetchedAt: number }
+
+async function fetchMarkdownRaw(url) {
+    let response = await axios({
+        url: 'https://api.brightdata.com/request',
+        method: 'POST',
+        data: {
+            url,
+            zone: unlocker_zone,
+            format: 'raw',
+            data_format: 'markdown',
+        },
+        headers: api_headers(),
+        responseType: 'text',
+    });
+    return response.data;
+}
+
+async function getMarkdownWithCache(url, { force = false } = {}) {
+    const now = Date.now();
+    const cached = pageCache.get(url);
+    if (!force && cached && (now - cached.fetchedAt) < PAGE_CACHE_TTL_MS) {
+        return { content: cached.content, fromCache: true, fetchedAt: cached.fetchedAt };
+    }
+    const rawContent = await fetchMarkdownRaw(url);
+    const strippedContent = stripImageLinks(rawContent); // Strip image links first
+    const processedContent = processLongLines(strippedContent); // Process long lines before caching
+    const fetchedAt = Date.now();
+    pageCache.set(url, { content: processedContent, fetchedAt });
+    return { content: processedContent, fromCache: false, fetchedAt };
+}
+
+function processLongLines(content) {
+    const MAX_LINE_LENGTH = 250;
+    const originalLines = content.split(/\r?\n/);
+    const processedLines = [];
+    
+    for (const line of originalLines) {
+        if (line.length <= MAX_LINE_LENGTH) {
+            processedLines.push(line);
+        } else {
+            // Break long lines into chunks of MAX_LINE_LENGTH
+            for (let i = 0; i < line.length; i += MAX_LINE_LENGTH) {
+                processedLines.push(line.substring(i, i + MAX_LINE_LENGTH));
+            }
+        }
+    }
+    
+    return processedLines.join('\n');
+}
+
+function getLineRange(content, startLine, endLine) {
+    const lines = content.split(/\r?\n/);
+    const start = Math.max(1, startLine) - 1; // Convert to 0-indexed
+    const end = Math.min(lines.length, endLine);
+    
+    return {
+        content: lines.slice(start, end).join('\n'),
+        total_lines: lines.length,
+        start_line: startLine,
+        end_line: Math.min(endLine, lines.length),
+        truncated: end < lines.length,
+    };
+}
+
+function stripImageLinks(content) {
+    // Remove ALL markdown image links (e.g., ![alt text](any-url))
+    // This regex matches ![...](any-url) patterns and removes them completely
+    return content.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+}
+
+function previewText(content, preview_lines) {
+    const MAX_PREVIEW_CHARS = 100000; // 100KB character limit for previews
+    
+    // Strip out image links first to reduce content size
+    const strippedContent = stripImageLinks(content);
+    const lines = strippedContent.split(/\r?\n/);
+    
+    let selectedLines = [];
+    let totalChars = 0;
+    let lineCount = 0;
+    
+    // Add lines until we hit line limit OR character limit
+    for (const line of lines) {
+        if (lineCount >= preview_lines || (totalChars + line.length + 1) > MAX_PREVIEW_CHARS) {
+            break;
+        }
+        selectedLines.push(line);
+        totalChars += line.length + 1; // +1 for newline
+        lineCount++;
+    }
+    
+    const truncated = lines.length > lineCount;
+    
+    return {
+        preview: selectedLines.join('\n'),
+        truncated,
+        total_lines: lines.length,
+        preview_lines_returned: lineCount,
+        preview_chars: totalChars,
+        char_limit_reached: totalChars >= MAX_PREVIEW_CHARS - 1000, // Buffer for safety
+    };
+}
+
+function debugLog(type, data) {
+    if (!debug_log_to_file) return;
+    
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${type}: ${JSON.stringify(data, null, 2)}\n\n`;
+    
+    try {
+        appendFileSync('debug_log', logEntry);
+    } catch (e) {
+        console.error('Failed to write debug log:', e.message);
+    }
+}
 
 const addTool = (tool) => {
     if (!pro_mode && !pro_mode_tools.includes(tool.name)) 
@@ -160,29 +312,83 @@ addTool({
     }),
 });
 
+
 addTool({
-    name: 'scrape_as_markdown',
-    description: 'Scrape a single webpage URL with advanced options for '
-    +'content extraction and get back the results in MarkDown language. '
-    +'This tool can unlock any webpage even if it uses bot detection or '
-    +'CAPTCHA.',
-    parameters: z.object({url: z.string().url()}),
-    execute: tool_fn('scrape_as_markdown', async({url})=>{
-        let response = await axios({
-            url: 'https://api.brightdata.com/request',
-            method: 'POST',
-            data: {
-                url,
-                zone: unlocker_zone,
-                format: 'raw',
-                data_format: 'markdown',
-            },
-            headers: api_headers(),
-            responseType: 'text',
-        });
-        return response.data;
+    name: 'get_page_previews',
+    description: 'PRIMARY TOOL: Fetch multiple URLs (max 10) in parallel and return markdown previews (first 500 lines). When analyzing multiple search results or related pages, batch them together for efficiency. Use heavily - fast, cached (10-minute TTL), designed for frequent use. All lines are max 250 chars each. Use get_page_content_range to get specific line ranges beyond the preview.',
+    parameters: z.object({
+        urls: z.array(z.string().url()).min(1).max(10),
+        force: z.boolean().optional().default(false),
+    }),
+    execute: tool_fn('get_page_previews', async ({ urls, force }) => {
+        const nowISO = new Date().toISOString();
+        const results = await Promise.all(urls.map(async (url) => {
+            try {
+                const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+                const p = previewText(content, 500); // Always 500 lines
+                return {
+                    url,
+                    status: 'ok',
+                    from_cache: fromCache,
+                    fetched_at: new Date(fetchedAt).toISOString(),
+                    start_line: 1,
+                    end_line: Math.min(500, p.total_lines),
+                    preview_lines: 500,
+                    total_lines: p.total_lines,
+                    truncated: p.truncated,
+                    content: p.preview,
+                    note: p.truncated ? `Page has ${p.total_lines} total lines. Use get_page_content_range(url, start_line, end_line) to get lines 501-${p.total_lines}. Max 5000 lines per request.` : "Complete page content shown.",
+                };
+            } catch (e) {
+                return {
+                    url,
+                    status: 'error',
+                    error: e.response?.data || e.message || String(e),
+                };
+            }
+        }));
+        return JSON.stringify({
+            tool: 'get_page_previews',
+            now: nowISO,
+            ttl_ms: PAGE_CACHE_TTL_MS,
+            max_line_length: 250,
+            results,
+        }, null, 2);
     }),
 });
+
+addTool({
+    name: 'get_page_content_range',
+    description: 'RANGE TOOL: Fetch specific line range from a single URL (e.g., lines 501-1000). Requires start_line and end_line parameters. Max 5000 lines per request. Use after get_page_previews to get more content from specific sections. All lines are max 250 chars each.',
+    parameters: z.object({
+        url: z.string().url(),
+        start_line: z.number().int().min(1),
+        end_line: z.number().int().min(1),
+        force: z.boolean().optional().default(false),
+    }).refine(data => data.end_line >= data.start_line, {
+        message: "end_line must be >= start_line"
+    }).refine(data => (data.end_line - data.start_line + 1) <= 5000, {
+        message: "Cannot request more than 5000 lines at once"
+    }),
+    execute: tool_fn('get_page_content_range', async ({ url, start_line, end_line, force }) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+        const range = getLineRange(content, start_line, end_line);
+        
+        return JSON.stringify({
+            url,
+            status: 'ok',
+            from_cache: fromCache,
+            fetched_at: new Date(fetchedAt).toISOString(),
+            start_line: range.start_line,
+            end_line: range.end_line,
+            total_lines: range.total_lines,
+            lines_returned: range.end_line - range.start_line + 1,
+            max_line_length: 250,
+            content: range.content,
+        }, null, 2);
+    }),
+});
+
 addTool({
     name: 'scrape_as_html',
     description: 'Scrape a single webpage URL with advanced options for '
@@ -750,17 +956,69 @@ for (let tool of browser_tools)
     addTool(tool);
 
 console.error('Starting server...');
-server.start({transportType: 'stdio'});
+if (transport_type === 'http') {
+    console.error(`Starting HTTP server on port ${http_port}...`);
+    
+    // For HTTP mode, require either env token or auth header
+    if (!api_token) {
+        console.error('Note: No API_TOKEN in environment. Token must be provided via Authorization: Bearer header');
+    }
+    
+    server.start({
+        transportType: 'httpStream',
+        httpStream: {
+            port: http_port,
+            stateless: true  // Enable stateless mode for simpler HTTP API usage
+        }
+    });
+    console.error(`✅ MCP server running at http://localhost:${http_port}/mcp`);
+    console.error(`Usage: Send requests with Authorization: Bearer YOUR_API_TOKEN header`);
+    console.error(`Pro mode: Add ?pro_mode=true to URL`);
+} else {
+    server.start({transportType: 'stdio'});
+}
 function tool_fn(name, fn){
     return async(data, ctx)=>{
+        // In HTTP mode, check that we have a valid token for tool calls
+        if (transport_type === 'http' && !ctx?.session?.authenticated) {
+            throw new Error('Authentication required: tool calls need Authorization: Bearer token');
+        }
+        
+        // Debug log the request
+        debugLog(`REQUEST_${name}`, {
+            tool: name,
+            data: data,
+            session: ctx?.session ? { authenticated: ctx.session.authenticated } : null,
+        });
+        
         check_rate_limit();
         debug_stats.tool_calls[name] = debug_stats.tool_calls[name]||0;
         debug_stats.tool_calls[name]++;
         debug_stats.session_calls++;
         let ts = Date.now();
         console.error(`[%s] executing %s`, name, JSON.stringify(data));
-        try { return await fn(data, ctx); }
+        try { 
+            const result = await fn(data, ctx);
+            
+            // Debug log the response
+            debugLog(`RESPONSE_${name}`, {
+                tool: name,
+                duration_ms: Date.now() - ts,
+                result: result,
+            });
+            
+            return result;
+        }
         catch(e){
+            // Debug log the error
+            debugLog(`ERROR_${name}`, {
+                tool: name,
+                duration_ms: Date.now() - ts,
+                error: e.message,
+                status: e.response?.status,
+                data: e.response?.data,
+            });
+            
         if (e.response)
             {
                 console.error(`[%s] error %s %s: %s`, name, e.response.status,

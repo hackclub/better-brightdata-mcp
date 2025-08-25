@@ -1,7 +1,8 @@
 |Feature|Description|
 |---|---|
 |search_engine|Scrape search results from Google, Bing or Yandex. Returns SERP results in markdown (URL, title, description)|
-|scrape_as_markdown|Scrape a single webpage URL with advanced options for content extraction and get back the results in MarkDown language. This tool can unlock any webpage even if it uses bot detection or CAPTCHA.|
+|get_page_previews|**PRIMARY TOOL**: Fetch multiple URLs (up to 10) **in parallel** and return markdown previews (first 500 lines). **Batch multiple search results together** for efficiency. Use heavily - fast, cached (10-minute TTL), max 250 chars per line. Includes guidance for using get_page_content_range. Params: `urls[]`, `force?=false`.|
+|get_page_content_range|**RANGE TOOL**: Fetch specific line range from single URL (e.g., lines 501-1000). Max 5000 lines per request, max 250 chars per line. Use after previews for more content. Params: `url`, `start_line`, `end_line`, `force?=false`.|
 |scrape_as_html|Scrape a single webpage URL with advanced options for content extraction and get back the results in HTML. This tool can unlock any webpage even if it uses bot detection or CAPTCHA.|
 |session_stats|Tell the user about the tool usage during this session|
 |web_data_amazon_product|Quickly read structured amazon product data. Requires a valid product URL with /dp/ in it. This can be a cache lookup, so it can be more reliable than scraping|
