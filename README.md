@@ -7,12 +7,14 @@ This is a fork of Bright Data's MCP server that is slightly improved for my (@za
 ## Quick Start (HTTP Mode)
 
 1. **Get your API token** from [Bright Data](https://brightdata.com)
-2. **Set up your token**: Create a `.env` file with `API_TOKEN=your_token_here`
-3. **Start the server**:
+2. **Start the server**:
    ```bash
    TRANSPORT_TYPE=http HTTP_PORT=3000 node server.js
    ```
-4. **Make requests** to `http://localhost:3000/mcp` with your token in the header
+3. **Make requests** to `http://localhost:3000/mcp` with your token in the header:
+   ```bash
+   curl -H "Authorization: Bearer your_token_here" ...
+   ```
 
 That's it! The server will cache web pages for 10 minutes and strip out all images to save tokens.
 
