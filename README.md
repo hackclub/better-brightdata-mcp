@@ -249,7 +249,7 @@ To enable **Pro mode**, simply add `"PRO_MODE"=true` to your enviroment variable
 
 [List of Available Tools](https://github.com/brightdata-com/brightdata-mcp/blob/main/assets/Tools.md)
 
-**Note**: By default, the basic tools are `search_engine`, `get_page_previews`, and `get_page_content_range`. To access all tools including browser automation and web data extraction, enable `PRO_MODE` in your configuration (see Account Setup section). The new caching tools use a 10-minute in-memory cache (configurable via `PAGE_CACHE_TTL_MS`).
+**Note**: By default, you get access to web scraping tools (`search_engine`, `get_page_previews`, `get_page_content_range`) and structured data extraction tools (social media posts, app store data, etc.). To access ALL tools including browser automation, enable `PRO_MODE` in your configuration (see Account Setup section). The new caching tools use a 10-minute in-memory cache (configurable via `PAGE_CACHE_TTL_MS`).
 
 ## ⚠️ Security Best Practices
 
@@ -268,7 +268,7 @@ Instead:
 
 3. Enable Pro Mode (for access to all tools):
    - Set `PRO_MODE=true` in your environment configuration to access browser automation, structured data extraction, and all available tools
-   - Default: `false` (only exposes `search_engine`, `get_page_previews`, and `get_page_content_range` tools)
+   - Default: `false` (exposes basic web scraping and structured data extraction tools - see Tools.md for full list)
    - See the advanced configuration example above for implementation details
 
 4. Configure rate limiting:

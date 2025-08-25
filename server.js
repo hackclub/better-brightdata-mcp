@@ -15,7 +15,24 @@ const pro_mode = process.env.PRO_MODE === 'true';
 const http_port = parseInt(process.env.HTTP_PORT || '3000', 10);
 const transport_type = process.env.TRANSPORT_TYPE || 'stdio'; // 'stdio' or 'http'
 const debug_log_to_file = process.env.DEBUG_LOG_TO_FILE === 'true';
-const pro_mode_tools = ['search_engine', 'get_page_previews', 'get_page_content_range'];
+const pro_mode_tools = [
+    'search_engine', 
+    'get_page_previews', 
+    'get_page_content_range',
+    'web_data_reddit_posts',
+    'web_data_youtube_comments',
+    'web_data_youtube_profiles', 
+    'web_data_apple_app_store',
+    'web_data_google_play_store',
+    'web_data_tiktok_posts',
+    'web_data_tiktok_profiles',
+    'web_data_youtube_videos',
+    'web_data_x_posts',
+    'web_data_instagram_posts',
+    'web_data_instagram_reels',
+    'web_data_instagram_comments',
+    'web_data_instagram_profiles'
+];
 function parse_rate_limit(rate_limit_str) {
     if (!rate_limit_str) 
         return null;

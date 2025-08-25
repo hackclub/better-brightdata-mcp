@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.0] - 2025-08-25
+
+### Added
+- **Social media and app store data extraction tools** now available in default (non-pro) mode:
+  - `web_data_reddit_posts`, `web_data_youtube_comments`, `web_data_youtube_profiles`, `web_data_youtube_videos`
+  - `web_data_apple_app_store`, `web_data_google_play_store` 
+  - `web_data_tiktok_posts`, `web_data_tiktok_profiles`
+  - `web_data_x_posts`, `web_data_instagram_posts`, `web_data_instagram_reels`, `web_data_instagram_comments`, `web_data_instagram_profiles`
+- Updated Tools.md with clear "Available By Default" column showing which tools are free vs pro-only
+
 ## [2.5.0] - 2025-08-25
 
 ### Added
@@ -12,13 +22,16 @@ All notable changes to this project will be documented in this file.
 - Support for Authorization: Bearer token authentication in HTTP mode
 - Debug logging to file with timestamps (`DEBUG_LOG_TO_FILE=true`)
 - Automatic line length processing: lines > 5000 chars are split into multiple lines
+- Image stripping functionality to remove all markdown image links and reduce token usage
 
 ### Changed
 - Default toolset now exposes `get_page_previews` and `get_page_content_range` instead of `scrape_as_markdown`
-- All cached content has max 5000 characters per line for better context window management
+- All cached content has max 250 characters per line for better context window management
+- Dockerfile optimized for containerized deployment with HTTP mode as default
 
 ### Removed
 - `scrape_as_markdown` tool (replaced by new caching tools)
+- All markdown image links are now stripped from content to reduce token usage
 
 ## [2.0.0] - 2025-05-26
 
