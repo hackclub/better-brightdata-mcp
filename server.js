@@ -19,6 +19,7 @@ const pro_mode_tools = [
     'search_engine', 
     'get_page_previews', 
     'get_page_content_range',
+    'grep_page_content',
     'web_data_reddit_posts',
     'web_data_youtube_comments',
     'web_data_youtube_profiles', 
@@ -451,6 +452,98 @@ addTool({
             lines_returned: range.end_line - range.start_line + 1,
             max_line_length: 250,
             content: range.content,
+        }, null, 2);
+    }),
+});
+
+addTool({
+    name: 'grep_page_content',
+    description: 'GREP TOOL: Search for regex patterns in a webpage and return matches with 25 lines of context before and after each match. Uses JavaScript regex syntax with support for flags like /pattern/gi. Perfect for finding specific content, errors, or patterns within large pages.',
+    parameters: z.object({
+        url: z.string().url(),
+        pattern: z.string().min(1),
+        max_matches: z.number().int().min(1).max(100).optional().default(20),
+        case_sensitive: z.boolean().optional().default(true),
+        force: z.boolean().optional().default(false),
+    }),
+    execute: tool_fn('grep_page_content', async ({ url, pattern, max_matches, case_sensitive, force }) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+        const lines = content.split(/\r?\n/);
+        const totalLines = lines.length;
+        
+        let regex;
+        try {
+            // Handle regex patterns - if it looks like /pattern/flags, parse it
+            const regexMatch = pattern.match(/^\/(.+)\/([gimuy]*)$/);
+            if (regexMatch) {
+                const [, regexPattern, flags] = regexMatch;
+                regex = new RegExp(regexPattern, flags);
+            } else {
+                // Simple string pattern
+                const flags = case_sensitive ? 'g' : 'gi';
+                regex = new RegExp(pattern, flags);
+            }
+        } catch (error) {
+            return JSON.stringify({
+                url,
+                status: 'error',
+                error: `Invalid regex pattern: ${error.message}`,
+                pattern,
+            }, null, 2);
+        }
+        
+        const matches = [];
+        let matchNumber = 0;
+        
+        // Search through each line
+        for (let i = 0; i < lines.length && matches.length < max_matches; i++) {
+            const line = lines[i];
+            const lineMatches = Array.from(line.matchAll(regex));
+            
+            for (const match of lineMatches) {
+                if (matches.length >= max_matches) break;
+                
+                matchNumber++;
+                const lineNumber = i + 1; // 1-indexed
+                
+                // Calculate context range (25 lines before and after)
+                const contextStart = Math.max(1, lineNumber - 25);
+                const contextEnd = Math.min(totalLines, lineNumber + 25);
+                
+                // Extract context lines
+                const contextLines = [];
+                for (let j = contextStart - 1; j < contextEnd; j++) { // Convert to 0-indexed
+                    const contextLine = lines[j];
+                    if (j === i) {
+                        // Highlight the matched line
+                        contextLines.push(`> ${contextLine}`);
+                    } else {
+                        contextLines.push(contextLine);
+                    }
+                }
+                
+                matches.push({
+                    match_number: matchNumber,
+                    line_number: lineNumber,
+                    matched_text: match[0],
+                    context_start_line: contextStart,
+                    context_end_line: contextEnd,
+                    context: contextLines.join('\n'),
+                });
+            }
+        }
+        
+        return JSON.stringify({
+            url,
+            status: 'ok',
+            from_cache: fromCache,
+            fetched_at: new Date(fetchedAt).toISOString(),
+            pattern,
+            total_lines: totalLines,
+            matches_found: matches.length,
+            total_matches: matches.length,
+            max_matches_limit: max_matches,
+            results: matches,
         }, null, 2);
     }),
 });
