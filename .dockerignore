@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+
+# Debug and test files
+debug_log
+test_*.js
+test_*.json
+*_test_*.txt
+page_*_contents*.txt
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+CHANGELOG.md
+examples/
+
+# OS and editor files
+.DS_Store
+.DS_Store?
+._*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs
+*.log
+
+# Docker
+Dockerfile*
+.dockerignore
