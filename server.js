@@ -175,7 +175,42 @@ let debug_stats = {tool_calls: {}, session_calls: 0, call_timestamps: []};
 
 // --- In-memory page cache (10 minutes by default) ---
 const PAGE_CACHE_TTL_MS = parseInt(process.env.PAGE_CACHE_TTL_MS || '600000', 10);
+const MAX_CACHE_SIZE = parseInt(process.env.MAX_CACHE_SIZE || '1000', 10);
 const pageCache = new Map(); // url -> { content: string, fetchedAt: number }
+
+// Clean up expired cache entries and enforce size limits
+function cleanupExpiredCache() {
+    const now = Date.now();
+    let removedCount = 0;
+    
+    // Remove expired entries
+    for (const [url, cached] of pageCache.entries()) {
+        if ((now - cached.fetchedAt) >= PAGE_CACHE_TTL_MS) {
+            pageCache.delete(url);
+            removedCount++;
+        }
+    }
+    
+    // If still too large, remove oldest entries (LRU-style)
+    if (pageCache.size > MAX_CACHE_SIZE) {
+        const entries = Array.from(pageCache.entries());
+        entries.sort((a, b) => a[1].fetchedAt - b[1].fetchedAt); // Sort by age
+        
+        const toRemove = pageCache.size - MAX_CACHE_SIZE;
+        for (let i = 0; i < toRemove; i++) {
+            pageCache.delete(entries[i][0]);
+            removedCount++;
+        }
+        console.error(`[Cache] Removed ${toRemove} oldest entries to enforce size limit`);
+    }
+    
+    if (removedCount > 0) {
+        console.error(`[Cache] Cleaned up ${removedCount} entries. Cache size: ${pageCache.size}`);
+    }
+}
+
+// Start cleanup timer (every 2 minutes for more aggressive cleanup)
+const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
 
 async function fetchMarkdownRaw(url) {
     let response = await axios({
@@ -196,14 +231,28 @@ async function fetchMarkdownRaw(url) {
 async function getMarkdownWithCache(url, { force = false } = {}) {
     const now = Date.now();
     const cached = pageCache.get(url);
-    if (!force && cached && (now - cached.fetchedAt) < PAGE_CACHE_TTL_MS) {
+    
+    // Immediately remove expired entries to prevent memory leaks
+    if (cached && (now - cached.fetchedAt) >= PAGE_CACHE_TTL_MS) {
+        console.error(`[Cache EXPIRED] Removing ${url} (age: ${Math.round((now - cached.fetchedAt) / 1000)}s)`);
+        pageCache.delete(url);
+        // Treat as if no cache entry exists
+        cached = null;
+    }
+    
+    if (!force && cached) {
+        const ageSeconds = Math.round((now - cached.fetchedAt) / 1000);
+        console.error(`[Cache HIT] ${url} (age: ${ageSeconds}s, size: ${pageCache.size})`);
         return { content: cached.content, fromCache: true, fetchedAt: cached.fetchedAt };
     }
+    
+    console.error(`[Cache MISS] Fetching ${url}${force ? ' (forced)' : ''}`);
     const rawContent = await fetchMarkdownRaw(url);
     const strippedContent = stripImageLinks(rawContent); // Strip image links first
     const processedContent = processLongLines(strippedContent); // Process long lines before caching
     const fetchedAt = Date.now();
     pageCache.set(url, { content: processedContent, fetchedAt });
+    console.error(`[Cache SET] ${url} (size: ${pageCache.size})`);
     return { content: processedContent, fromCache: false, fetchedAt };
 }
 
