@@ -354,6 +354,56 @@ function debugLog(type, data) {
     }
 }
 
+// Utility function for handling multiple promises with timeout
+async function executeWithTimeout(promises, timeoutMs = 50000, getTimeoutResult) {
+    // Create a promise that resolves with timeout error for each individual promise
+    const timeoutPromise = (index, originalPromise) => new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            resolve({
+                index,
+                status: 'timeout',
+                error: `Request timed out after ${timeoutMs / 1000} seconds`,
+            });
+        }, timeoutMs);
+        
+        originalPromise.then((result) => {
+            clearTimeout(timer);
+            resolve({
+                index,
+                status: 'completed',
+                result,
+            });
+        }).catch((error) => {
+            clearTimeout(timer);
+            resolve({
+                index,
+                status: 'error', 
+                error,
+            });
+        });
+    });
+    
+    // Race each promise against its own timeout
+    const promisesWithTimeout = promises.map((promise, index) => 
+        timeoutPromise(index, promise)
+    );
+    
+    // Wait for all to complete (either with results or timeouts)
+    const settledResults = await Promise.all(promisesWithTimeout);
+    
+    // Return results in original order
+    return settledResults.map(result => {
+        if (result.status === 'completed') {
+            return result.result;
+        } else if (result.status === 'timeout') {
+            return getTimeoutResult(result.error);
+        } else {
+            // Handle the error case from the original promise  
+            return result.error;
+        }
+    });
+}
+
 const addTool = (tool) => {
     if (!pro_mode && !pro_mode_tools.includes(tool.name)) 
         return;
@@ -371,7 +421,7 @@ addTool({
         })).min(1).max(5),
     }),
     execute: tool_fn('search_engine', async({ queries }, ctx) => {
-        const results = await Promise.all(queries.map(async (queryObj) => {
+        const queryPromises = queries.map(async (queryObj) => {
             try {
                 const { query, engine = 'google', cursor } = queryObj;
                 
@@ -414,12 +464,26 @@ addTool({
                     error_details: errorDetails,
                 };
             }
+        });
+
+        // Execute with 50-second timeout  
+        const results = await executeWithTimeout(queryPromises, 50000, (timeoutError) => ({
+            query: 'timeout',
+            engine: 'timeout', 
+            status: 'error',
+            error: timeoutError,
+            error_details: {
+                message: timeoutError,
+                type: 'TimeoutError',
+                timeout_ms: 50000,
+            }
         }));
 
         return JSON.stringify({
             tool: 'search_engine',
             queries_processed: queries.length,
             results,
+            timeout_ms: 50000,
         }, null, 2);
     }),
 });
@@ -433,7 +497,7 @@ addTool({
     }),
     execute: tool_fn('get_page_previews', async ({ urls }, ctx) => {
         const nowISO = new Date().toISOString();
-        const results = await Promise.all(urls.map(async (url) => {
+        const urlPromises = urls.map(async (url) => {
             try {
                 const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, ctx?.session?.token);
                 const p = previewText(content, 500); // Always 500 lines
@@ -467,12 +531,26 @@ addTool({
                     error_details: errorDetails,
                 };
             }
+        });
+
+        // Execute with 50-second timeout
+        const results = await executeWithTimeout(urlPromises, 50000, (timeoutError) => ({
+            url: 'timeout',
+            status: 'error',
+            error: timeoutError,
+            error_details: {
+                message: timeoutError,
+                type: 'TimeoutError',
+                timeout_ms: 50000,
+            }
         }));
+
         return JSON.stringify({
             tool: 'get_page_previews',
             now: nowISO,
             ttl_ms: PAGE_CACHE_TTL_MS,
             max_line_length: 250,
+            timeout_ms: 50000,
             results,
         }, null, 2);
     }),
