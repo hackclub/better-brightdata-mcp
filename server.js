@@ -308,6 +308,99 @@ function stripImageLinks(content) {
     return content.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
 }
 
+// Extract clean search results from Google SERP content
+function extractSerpResults(content, query) {
+    try {
+        // 1) Remove markdown images (including base64 data URIs)
+        const noImages = content.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+
+        // 2) Capture [title block](https://url) patterns
+        const LINK_BLOCK = /\[((?:[^\[\]]|\n)+?)\]\((https?:\/\/[^\s)]+)\)/g;
+
+        const seen = new Map();
+        const results = [];
+        let match;
+        
+        while ((match = LINK_BLOCK.exec(noImages)) !== null) {
+            const block = match[1];
+            let urlStr = match[2];
+            
+            if (urlStr.startsWith('data:')) continue;
+
+            // 3) Canonicalize & filter URL
+            let url;
+            try { 
+                url = new URL(urlStr); 
+            } catch { 
+                continue; 
+            }
+            
+            // Skip Google internal links
+            if (/(^|\.)google\./i.test(url.hostname)) continue;
+
+            // Strip common tracking params
+            const paramsToRemove = ['utm_', 'gclid', 'fbclid', 'ved', 'sa', 'usg', 'ei', 'oq', 'hl', 'source', 'ictx', 'tbm', 'sca_esv', 'ntc', 'aep', 'ptn', 'ver', 'hsh', 'fclid'];
+            for (const key of [...url.searchParams.keys()]) {
+                for (const param of paramsToRemove) {
+                    if (key.startsWith(param)) {
+                        url.searchParams.delete(key);
+                        break;
+                    }
+                }
+            }
+            url.hash = '';
+            urlStr = url.toString();
+
+            // 4) Choose reasonable title from the bracket block
+            const titleLineMatch =
+                block.match(/^###\s+(.+?)\s*$/m) ||       // Prefer "### Title"
+                block.match(/^\s*([^\n]{3,200}?)\s*$/m);  // Else first non-empty line
+            
+            if (!titleLineMatch) continue;
+
+            let title = titleLineMatch[1]
+                .replace(/[_*`#]+/g, '')   // Strip markdown emphasis
+                .replace(/\s+/g, ' ')     // Normalize whitespace
+                .trim();
+
+            if (!title || title.length < 3) continue;
+            
+            // Deduplicate by URL
+            if (!seen.has(urlStr)) {
+                seen.set(urlStr, { title, url: urlStr });
+                results.push({ title, url: urlStr });
+            }
+        }
+
+        // Return cleaned results or fallback to original
+        if (results.length === 0) {
+            return { 
+                cleaned: false, 
+                content: content,
+                note: "No search results could be extracted, returning raw content"
+            };
+        }
+
+        return {
+            cleaned: true,
+            results: results,
+            original_content_length: content.length,
+            cleaned_results_count: results.length,
+            note: `Extracted ${results.length} clean search results`
+        };
+        
+    } catch (error) {
+        // If cleaning fails, return original content
+        console.error(`[SERP cleaning failed for query: ${query}]:`, error.message);
+        return { 
+            cleaned: false, 
+            content: content,
+            error: `SERP cleaning failed: ${error.message}`,
+            note: "Cleaning failed, returning raw content"
+        };
+    }
+}
+
 function previewText(content, preview_lines) {
     const MAX_PREVIEW_CHARS = 100000; // 100KB character limit for previews
     
@@ -449,12 +542,29 @@ addTool({
                     responseType: 'text',
                 });
 
+                let processedContent = response.data;
+                let serpResults = null;
+                
+                // Apply SERP cleaning only for Google searches
+                if (engine === 'google') {
+                    const cleaned = extractSerpResults(response.data, query);
+                    if (cleaned.cleaned) {
+                        serpResults = cleaned.results;
+                        processedContent = cleaned.results.map(r => `- [${r.title}](${r.url})`).join('\n');
+                    }
+                    // If cleaning failed or found no results, keep original content
+                }
+
                 return {
                     query,
                     engine,
                     cursor,
                     status: 'ok',
-                    content: response.data,
+                    content: processedContent,
+                    ...(serpResults && { 
+                        search_results: serpResults,
+                        original_content_length: response.data.length 
+                    }),
                 };
             } catch (error) {
                 const errorDetails = {
