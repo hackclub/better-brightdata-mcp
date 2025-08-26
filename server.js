@@ -308,6 +308,108 @@ function stripImageLinks(content) {
     return content.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
 }
 
+// Clean GitHub-specific boilerplate from markdown content
+function cleanGitHubBoilerplate(content, url) {
+    // Only apply to GitHub URLs
+    if (!url || !url.includes('github.com')) {
+        return content;
+    }
+    
+    try {
+        let cleaned = content;
+        
+        // Remove GitHub navigation and UI elements based on actual traffic analysis
+        const boilerplatePatterns = [
+            // Full navigation menu blocks (from ngrok analysis)
+            /## Navigation Menu[\s\S]*?Toggle navigation[\s\S]*?(?=\n\n|Appearance settings|$)/g,
+            
+            // Large product/feature menus (200+ lines each in ngrok traffic)
+            /\*\s+Product\s*\n[\s\S]*?(?=\n\*\s+[A-Z]|\n\*\s+Open|\n\*\s+Solutions|\n\*\s+Resources|\n\*\s+Enterprise|\n\n[A-Z]|\n[A-Za-z].*:|\n\*\*|$)/g,
+            /\*\s+Solutions\s*\n[\s\S]*?(?=\n\*\s+[A-Z]|\n\*\s+Open|\n\*\s+Product|\n\*\s+Resources|\n\*\s+Enterprise|\n\n[A-Z]|\n[A-Za-z].*:|\n\*\*|$)/g,
+            /\*\s+Resources\s*\n[\s\S]*?(?=\n\*\s+[A-Z]|\n\*\s+Open|\n\*\s+Product|\n\*\s+Solutions|\n\*\s+Enterprise|\n\n[A-Z]|\n[A-Za-z].*:|\n\*\*|$)/g,
+            /\*\s+Open Source\s*\n[\s\S]*?(?=\n\*\s+[A-Z]|\n\*\s+Product|\n\*\s+Solutions|\n\*\s+Resources|\n\*\s+Enterprise|\n\n[A-Z]|\n[A-Za-z].*:|\n\*\*|$)/g,
+            /\*\s+Enterprise\s*\n[\s\S]*?(?=\n\*\s+[A-Z]|\n\*\s+Open|\n\*\s+Product|\n\*\s+Solutions|\n\*\s+Resources|\n\n[A-Z]|\n[A-Za-z].*:|\n\*\*|$)/g,
+            
+            // Search interface (from analysis)
+            /Search or jump to\.\.\.[\s\S]*?(?=\n# |\nSearch\n|\nClear\n|$)/g,
+            /\[Search syntax tips\][\s\S]*?\n/g,
+            /# Search code, repositories[\s\S]*?\n/g,
+            
+            // Footer sections (large in ngrok traffic)
+            /## Footer[\s\S]*$/g,
+            /### Footer navigation[\s\S]*$/g,
+            /\[Terms\]\([^)]*\)[\s\S]*?\[Privacy\][\s\S]*?Do not share my personal information/g,
+            
+            // Block/Report interface (large section)
+            /Block or Report[\s\S]*?# Block or report[\s\S]*?\[Report abuse\]\([^)]*\)/g,
+            
+            // Authentication and session messages
+            /\[Sign in\]\([^)]*\)[\s\S]*?\[Sign up\]\([^)]*\)/g,
+            /You signed in with another tab[\s\S]*?Dismiss alert/g,
+            /You signed out in another tab[\s\S]*?Dismiss alert/g,
+            /You switched accounts on another tab[\s\S]*?Dismiss alert/g,
+            /Resetting focus[\s\S]*?Dismiss alert/g,
+            
+            // Error messages and loading issues
+            /(Something went wrong|There was an error while loading)[\s\S]*?(Please reload this page\.|contact support)[\s\S]*?\./g,
+            /### Uh oh!\s*\n[\s\S]*?There was an error while loading\. Please reload this page\./g,
+            
+            // Feedback and help sections
+            /# Provide feedback[\s\S]*?Submit feedback/g,
+            
+            // Saved searches interface
+            /# Saved searches[\s\S]*?Create saved search/g,
+            
+            // Appearance settings
+            /Appearance settings[\s\S]*?\n/g,
+            
+            // Logged-out user prompts
+            /You must be logged in to[\s\S]*?\n/g,
+            /You can't perform that action[\s\S]*?\n/g,
+            
+            // GitHub global navigation from main pages
+            /\*\s+\[Why GitHub\][\s\S]*?\*\s+\[Documentation\]/g,
+            /\*\s+\[Topics\][\s\S]*?\*\s+\[Collections\]/g,
+            
+            // Site-wide footer links (huge section)
+            /## Site-wide Links[\s\S]*$/g,
+            /### Subscribe to our developer newsletter[\s\S]*$/g,
+            /### Platform[\s\S]*$/g,
+            /### Ecosystem[\s\S]*$/g,
+            /### Support[\s\S]*$/g,
+            /### Company[\s\S]*$/g,
+            
+            // Social media and language footer
+            /\*\s+©\s+\d+\s+GitHub[\s\S]*$/g,
+            /\*\s+\[GitHub on LinkedIn\][\s\S]*$/g,
+            /English[\s\S]*?日本語.*$/g,
+        ];
+        
+        for (const pattern of boilerplatePatterns) {
+            cleaned = cleaned.replace(pattern, '\n\n');
+        }
+        
+        // Clean up multiple newlines and trim
+        cleaned = cleaned
+            .replace(/\n\n\n+/g, '\n\n')
+            .replace(/^\s+|\s+$/g, '')
+            .trim();
+            
+        // Only return cleaned version if it actually removed significant content
+        const reductionPercent = (content.length - cleaned.length) / content.length;
+        if (reductionPercent > 0.15) { // Only if we removed more than 15%
+            console.error(`[GitHub cleaning] Reduced ${url} by ${Math.round(reductionPercent * 100)}% (${content.length} → ${cleaned.length} chars)`);
+            return cleaned;
+        }
+        
+        return content;
+        
+    } catch (error) {
+        console.error(`[GitHub cleaning failed for ${url}]:`, error.message);
+        return content; // Return original on any error
+    }
+}
+
 // Extract clean search results from Google SERP content
 function extractSerpResults(content, query) {
     try {
@@ -401,12 +503,16 @@ function extractSerpResults(content, query) {
     }
 }
 
-function previewText(content, preview_lines) {
+function previewText(content, preview_lines, url = null) {
     const MAX_PREVIEW_CHARS = 100000; // 100KB character limit for previews
     
     // Strip out image links first to reduce content size
-    const strippedContent = stripImageLinks(content);
-    const lines = strippedContent.split(/\r?\n/);
+    let processedContent = stripImageLinks(content);
+    
+    // Apply GitHub-specific cleaning if applicable
+    processedContent = cleanGitHubBoilerplate(processedContent, url);
+    
+    const lines = processedContent.split(/\r?\n/);
     
     let selectedLines = [];
     let totalChars = 0;
@@ -614,7 +720,7 @@ addTool({
         const urlPromises = urls.map(async (url) => {
             try {
                 const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, ctx?.session?.token);
-                const p = previewText(content, 500); // Always 500 lines
+                const p = previewText(content, 500, url); // Always 500 lines, pass URL for cleaning
                 return {
                     url,
                     status: 'ok',
