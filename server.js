@@ -543,13 +543,11 @@ addTool({
                 });
 
                 let processedContent = response.data;
-                let serpResults = null;
                 
                 // Apply SERP cleaning only for Google searches
                 if (engine === 'google') {
                     const cleaned = extractSerpResults(response.data, query);
                     if (cleaned.cleaned) {
-                        serpResults = cleaned.results;
                         processedContent = cleaned.results.map(r => `- [${r.title}](${r.url})`).join('\n');
                     }
                     // If cleaning failed or found no results, keep original content
@@ -561,10 +559,6 @@ addTool({
                     cursor,
                     status: 'ok',
                     content: processedContent,
-                    ...(serpResults && { 
-                        search_results: serpResults,
-                        original_content_length: response.data.length 
-                    }),
                 };
             } catch (error) {
                 const errorDetails = {
