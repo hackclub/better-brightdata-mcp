@@ -5,7 +5,7 @@
 
 |Feature|Description|Available By Default|
 |---|---|---|
-|search_engine|Scrape search results from Google, Bing or Yandex. Returns SERP results in markdown (URL, title, description)|✅ YES|
+|search_engine|**PRIMARY SEARCH TOOL**: Execute multiple search queries (max 5) **in parallel** across Google, Bing, or Yandex. **Batch multiple searches together** for efficiency. Returns SERP results in markdown for each query. Params: `queries[]` with `query`, `engine?=google`, `cursor?` fields.|✅ YES|
 |get_page_previews|**PRIMARY TOOL**: Fetch multiple URLs (up to 10) **in parallel** and return markdown previews (first 500 lines). **Batch multiple search results together** for efficiency. Use heavily - fast, cached (10-minute TTL), max 250 chars per line. Includes guidance for using get_page_content_range. Params: `urls[]`, `force?=false`.|✅ YES|
 |get_page_content_range|**RANGE TOOL**: Fetch specific line range from single URL (e.g., lines 501-1000). Max 5000 lines per request, max 250 chars per line. Use after previews for more content. Params: `url`, `start_line`, `end_line`, `force?=false`.|✅ YES|
 |grep_page_content|**GREP TOOL**: Search for regex patterns in webpage content and return matches with 25 lines of context before/after each match. Supports JavaScript regex syntax with flags like /pattern/gi. Perfect for finding specific content, errors, or patterns. Params: `url`, `pattern`, `max_matches?=20`, `case_sensitive?=true`, `force?=false`.|✅ YES|

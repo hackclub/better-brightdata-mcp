@@ -213,7 +213,7 @@ function cleanupExpiredCache() {
 // Start cleanup timer (every 2 minutes for more aggressive cleanup)
 const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
 
-async function fetchMarkdownRaw(url) {
+async function fetchMarkdownRaw(url, context_token = null) {
     let response = await axios({
         url: 'https://api.brightdata.com/request',
         method: 'POST',
@@ -223,13 +223,13 @@ async function fetchMarkdownRaw(url) {
             format: 'raw',
             data_format: 'markdown',
         },
-        headers: api_headers(),
+        headers: api_headers(context_token),
         responseType: 'text',
     });
     return response.data;
 }
 
-async function getMarkdownWithCache(url, { force = false } = {}) {
+async function getMarkdownWithCache(url, { force = false, context_token = null } = {}) {
     const now = Date.now();
     const cached = pageCache.get(url);
     
@@ -248,7 +248,7 @@ async function getMarkdownWithCache(url, { force = false } = {}) {
     }
     
     console.error(`[Cache MISS] Fetching ${url}${force ? ' (forced)' : ''}`);
-    const rawContent = await fetchMarkdownRaw(url);
+    const rawContent = await fetchMarkdownRaw(url, context_token);
     const strippedContent = stripImageLinks(rawContent); // Strip image links first
     const processedContent = processLongLines(strippedContent); // Process long lines before caching
     const fetchedAt = Date.now();
@@ -350,32 +350,55 @@ const addTool = (tool) => {
 
 addTool({
     name: 'search_engine',
-    description: 'Scrape search results from Google, Bing or Yandex. Returns '
-    +'SERP results in markdown (URL, title, description)',
+    description: 'PRIMARY SEARCH TOOL: Execute multiple search queries (max 5) in parallel across Google, Bing, or Yandex. **Batch multiple search queries together** for efficiency instead of making individual requests. Returns SERP results in markdown format (URL, title, description) for each query.',
     parameters: z.object({
-        query: z.string(),
-        engine: z.enum([
-            'google',
-            'bing',
-            'yandex',
-        ]).optional().default('google'),
-        cursor: z.string().optional().describe('Pagination cursor for next page'),
+        queries: z.array(z.object({
+            query: z.string(),
+            engine: z.enum(['google', 'bing', 'yandex']).optional().default('google'),
+            cursor: z.string().optional().describe('Pagination cursor for next page'),
+        })).min(1).max(5),
     }),
-    execute: tool_fn('search_engine', async({query, engine, cursor})=>{
-        let response = await axios({
-            url: 'https://api.brightdata.com/request',
-            method: 'POST',
-            data: {
-                url: search_url(engine, query, cursor),
-                zone: unlocker_zone,
-                format: 'raw',
-                data_format: 'markdown',
-            },
-            headers: api_headers(),
-            responseType: 'text',
-        });
+    execute: tool_fn('search_engine', async({ queries }, ctx) => {
+        const results = await Promise.all(queries.map(async (queryObj) => {
+            try {
+                const { query, engine = 'google', cursor } = queryObj;
+                
+                let response = await axios({
+                    url: 'https://api.brightdata.com/request',
+                    method: 'POST',
+                    data: {
+                        url: search_url(engine, query, cursor),
+                        zone: unlocker_zone,
+                        format: 'raw',
+                        data_format: 'markdown',
+                    },
+                    headers: api_headers(ctx?.session?.token),
+                    responseType: 'text',
+                });
 
-        return response.data;
+                return {
+                    query,
+                    engine,
+                    cursor,
+                    status: 'ok',
+                    content: response.data,
+                };
+            } catch (error) {
+                return {
+                    query: queryObj.query,
+                    engine: queryObj.engine || 'google',
+                    cursor: queryObj.cursor,
+                    status: 'error',
+                    error: error.response?.data || error.message || String(error),
+                };
+            }
+        }));
+
+        return JSON.stringify({
+            tool: 'search_engine',
+            queries_processed: queries.length,
+            results,
+        }, null, 2);
     }),
 });
 
@@ -387,11 +410,11 @@ addTool({
         urls: z.array(z.string().url()).min(1).max(10),
         force: z.boolean().optional().default(false),
     }),
-    execute: tool_fn('get_page_previews', async ({ urls, force }) => {
+    execute: tool_fn('get_page_previews', async ({ urls, force }, ctx) => {
         const nowISO = new Date().toISOString();
         const results = await Promise.all(urls.map(async (url) => {
             try {
-                const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+                const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
                 const p = previewText(content, 500); // Always 500 lines
                 return {
                     url,
@@ -437,8 +460,8 @@ addTool({
     }).refine(data => (data.end_line - data.start_line + 1) <= 5000, {
         message: "Cannot request more than 5000 lines at once"
     }),
-    execute: tool_fn('get_page_content_range', async ({ url, start_line, end_line, force }) => {
-        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+    execute: tool_fn('get_page_content_range', async ({ url, start_line, end_line, force }, ctx) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
         const range = getLineRange(content, start_line, end_line);
         
         return JSON.stringify({
@@ -466,8 +489,8 @@ addTool({
         case_sensitive: z.boolean().optional().default(true),
         force: z.boolean().optional().default(false),
     }),
-    execute: tool_fn('grep_page_content', async ({ url, pattern, max_matches, case_sensitive, force }) => {
-        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force });
+    execute: tool_fn('grep_page_content', async ({ url, pattern, max_matches, case_sensitive, force }, ctx) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
         const lines = content.split(/\r?\n/);
         const totalLines = lines.length;
         
