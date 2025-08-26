@@ -243,7 +243,7 @@ async function fetchMarkdownRaw(url, context_token = null) {
 
 async function getMarkdownWithCache(url, context_token = null) {
     const now = Date.now();
-    const cached = pageCache.get(url);
+    let cached = pageCache.get(url);
     
     // Immediately remove expired entries to prevent memory leaks
     if (cached && (now - cached.fetchedAt) >= PAGE_CACHE_TTL_MS) {
