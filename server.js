@@ -214,19 +214,31 @@ function cleanupExpiredCache() {
 const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
 
 async function fetchMarkdownRaw(url, context_token = null) {
-    let response = await axios({
-        url: 'https://api.brightdata.com/request',
-        method: 'POST',
-        data: {
-            url,
-            zone: unlocker_zone,
-            format: 'raw',
-            data_format: 'markdown',
-        },
-        headers: api_headers(context_token),
-        responseType: 'text',
-    });
-    return response.data;
+    try {
+        let response = await axios({
+            url: 'https://api.brightdata.com/request',
+            method: 'POST',
+            data: {
+                url,
+                zone: unlocker_zone,
+                format: 'raw',
+                data_format: 'markdown',
+            },
+            headers: api_headers(context_token),
+            responseType: 'text',
+        });
+        return response.data;
+    } catch (error) {
+        // Add more detailed error information for debugging
+        console.error(`[fetchMarkdownRaw] Error fetching ${url}:`, {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            message: error.message,
+            code: error.code,
+            data: error.response?.data
+        });
+        throw error; // Re-throw to let caller handle it
+    }
 }
 
 async function getMarkdownWithCache(url, context_token = null) {
@@ -384,12 +396,22 @@ addTool({
                     content: response.data,
                 };
             } catch (error) {
+                const errorDetails = {
+                    message: error.message || 'Unknown error occurred',
+                    type: error.constructor.name || 'Error',
+                    status: error.response?.status || null,
+                    statusText: error.response?.statusText || null,
+                    responseData: error.response?.data || null,
+                    code: error.code || null,
+                };
+                
                 return {
                     query: queryObj.query,
                     engine: queryObj.engine || 'google',
                     cursor: queryObj.cursor,
                     status: 'error',
-                    error: error.response?.data || error.message || String(error),
+                    error: errorDetails.message,
+                    error_details: errorDetails,
                 };
             }
         }));
@@ -429,10 +451,20 @@ addTool({
                     note: p.truncated ? `Page has ${p.total_lines} total lines. Use get_page_content_range(url, start_line, end_line) to get lines 501-${p.total_lines}. Max 5000 lines per request.` : "Complete page content shown.",
                 };
             } catch (e) {
+                const errorDetails = {
+                    message: e.message || 'Unknown error occurred',
+                    type: e.constructor.name || 'Error',
+                    status: e.response?.status || null,
+                    statusText: e.response?.statusText || null,
+                    responseData: e.response?.data || null,
+                    code: e.code || null,
+                };
+                
                 return {
                     url,
                     status: 'error',
-                    error: e.response?.data || e.message || String(e),
+                    error: errorDetails.message,
+                    error_details: errorDetails,
                 };
             }
         }));
