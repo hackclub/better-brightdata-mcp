@@ -355,18 +355,20 @@ function debugLog(type, data) {
 }
 
 // Utility function for handling multiple promises with timeout
-async function executeWithTimeout(promises, timeoutMs = 50000, getTimeoutResult) {
+async function executeWithTimeout(promiseConfigs, timeoutMs = 50000) {
+    // promiseConfigs should be array of {promise, timeoutResult} objects
+    
     // Create a promise that resolves with timeout error for each individual promise
-    const timeoutPromise = (index, originalPromise) => new Promise((resolve) => {
+    const timeoutPromise = (index, config) => new Promise((resolve) => {
         const timer = setTimeout(() => {
             resolve({
                 index,
                 status: 'timeout',
-                error: `Request timed out after ${timeoutMs / 1000} seconds`,
+                timeoutResult: config.timeoutResult,
             });
         }, timeoutMs);
         
-        originalPromise.then((result) => {
+        config.promise.then((result) => {
             clearTimeout(timer);
             resolve({
                 index,
@@ -384,8 +386,8 @@ async function executeWithTimeout(promises, timeoutMs = 50000, getTimeoutResult)
     });
     
     // Race each promise against its own timeout
-    const promisesWithTimeout = promises.map((promise, index) => 
-        timeoutPromise(index, promise)
+    const promisesWithTimeout = promiseConfigs.map((config, index) => 
+        timeoutPromise(index, config)
     );
     
     // Wait for all to complete (either with results or timeouts)
@@ -396,7 +398,16 @@ async function executeWithTimeout(promises, timeoutMs = 50000, getTimeoutResult)
         if (result.status === 'completed') {
             return result.result;
         } else if (result.status === 'timeout') {
-            return getTimeoutResult(result.error);
+            return {
+                ...result.timeoutResult,
+                status: 'error',
+                error: `Request timed out after ${timeoutMs / 1000} seconds`,
+                error_details: {
+                    message: `Request timed out after ${timeoutMs / 1000} seconds`,
+                    type: 'TimeoutError',
+                    timeout_ms: timeoutMs,
+                }
+            };
         } else {
             // Handle the error case from the original promise  
             return result.error;
@@ -467,17 +478,16 @@ addTool({
         });
 
         // Execute with 50-second timeout  
-        const results = await executeWithTimeout(queryPromises, 50000, (timeoutError) => ({
-            query: 'timeout',
-            engine: 'timeout', 
-            status: 'error',
-            error: timeoutError,
-            error_details: {
-                message: timeoutError,
-                type: 'TimeoutError',
-                timeout_ms: 50000,
+        const promiseConfigs = queries.map((queryObj, index) => ({
+            promise: queryPromises[index],
+            timeoutResult: {
+                query: queryObj.query,
+                engine: queryObj.engine || 'google',
+                cursor: queryObj.cursor,
             }
         }));
+        
+        const results = await executeWithTimeout(promiseConfigs, 50000);
 
         return JSON.stringify({
             tool: 'search_engine',
@@ -534,16 +544,14 @@ addTool({
         });
 
         // Execute with 50-second timeout
-        const results = await executeWithTimeout(urlPromises, 50000, (timeoutError) => ({
-            url: 'timeout',
-            status: 'error',
-            error: timeoutError,
-            error_details: {
-                message: timeoutError,
-                type: 'TimeoutError',
-                timeout_ms: 50000,
+        const promiseConfigs = urls.map((url, index) => ({
+            promise: urlPromises[index],
+            timeoutResult: {
+                url: url,
             }
         }));
+        
+        const results = await executeWithTimeout(promiseConfigs, 50000);
 
         return JSON.stringify({
             tool: 'get_page_previews',
