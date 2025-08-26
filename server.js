@@ -229,7 +229,7 @@ async function fetchMarkdownRaw(url, context_token = null) {
     return response.data;
 }
 
-async function getMarkdownWithCache(url, { force = false, context_token = null } = {}) {
+async function getMarkdownWithCache(url, context_token = null) {
     const now = Date.now();
     const cached = pageCache.get(url);
     
@@ -241,13 +241,13 @@ async function getMarkdownWithCache(url, { force = false, context_token = null }
         cached = null;
     }
     
-    if (!force && cached) {
+    if (cached) {
         const ageSeconds = Math.round((now - cached.fetchedAt) / 1000);
         console.error(`[Cache HIT] ${url} (age: ${ageSeconds}s, size: ${pageCache.size})`);
         return { content: cached.content, fromCache: true, fetchedAt: cached.fetchedAt };
     }
     
-    console.error(`[Cache MISS] Fetching ${url}${force ? ' (forced)' : ''}`);
+    console.error(`[Cache MISS] Fetching ${url}`);
     const rawContent = await fetchMarkdownRaw(url, context_token);
     const strippedContent = stripImageLinks(rawContent); // Strip image links first
     const processedContent = processLongLines(strippedContent); // Process long lines before caching
@@ -408,13 +408,12 @@ addTool({
     description: 'PRIMARY TOOL: Fetch multiple URLs (max 10) in parallel and return markdown previews (first 500 lines). When analyzing multiple search results or related pages, batch them together for efficiency. Use heavily - fast, cached (10-minute TTL), designed for frequent use. All lines are max 250 chars each. Use get_page_content_range to get specific line ranges beyond the preview.',
     parameters: z.object({
         urls: z.array(z.string().url()).min(1).max(10),
-        force: z.boolean().optional().default(false),
     }),
-    execute: tool_fn('get_page_previews', async ({ urls, force }, ctx) => {
+    execute: tool_fn('get_page_previews', async ({ urls }, ctx) => {
         const nowISO = new Date().toISOString();
         const results = await Promise.all(urls.map(async (url) => {
             try {
-                const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
+                const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, ctx?.session?.token);
                 const p = previewText(content, 500); // Always 500 lines
                 return {
                     url,
@@ -454,14 +453,13 @@ addTool({
         url: z.string().url(),
         start_line: z.number().int().min(1),
         end_line: z.number().int().min(1),
-        force: z.boolean().optional().default(false),
     }).refine(data => data.end_line >= data.start_line, {
         message: "end_line must be >= start_line"
     }).refine(data => (data.end_line - data.start_line + 1) <= 5000, {
         message: "Cannot request more than 5000 lines at once"
     }),
-    execute: tool_fn('get_page_content_range', async ({ url, start_line, end_line, force }, ctx) => {
-        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
+    execute: tool_fn('get_page_content_range', async ({ url, start_line, end_line }, ctx) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, ctx?.session?.token);
         const range = getLineRange(content, start_line, end_line);
         
         return JSON.stringify({
@@ -487,10 +485,9 @@ addTool({
         pattern: z.string().min(1),
         max_matches: z.number().int().min(1).max(100).optional().default(20),
         case_sensitive: z.boolean().optional().default(true),
-        force: z.boolean().optional().default(false),
     }),
-    execute: tool_fn('grep_page_content', async ({ url, pattern, max_matches, case_sensitive, force }, ctx) => {
-        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, { force, context_token: ctx?.session?.token });
+    execute: tool_fn('grep_page_content', async ({ url, pattern, max_matches, case_sensitive }, ctx) => {
+        const { content, fromCache, fetchedAt } = await getMarkdownWithCache(url, ctx?.session?.token);
         const lines = content.split(/\r?\n/);
         const totalLines = lines.length;
         
