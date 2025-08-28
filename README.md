@@ -3,6 +3,36 @@ This is a fork of Bright Data's MCP server that is slightly improved for my (@za
 - Adds support to serve the MCP server over HTTP with a token passed in with requests
 - Changes the default tools to run multiple page loads in parallel
 - Significantly reduces the amount of tokens returned in each request and paginates responses
+- **NEW**: Comprehensive debug logging with UUID correlation for production monitoring
+
+## 🐛 Debug Logging (NEW!)
+
+**Perfect for production monitoring and multi-client debugging!**
+
+```bash
+# Enable comprehensive debug logging
+DEBUG_LOG_FILE=./requests.log node server.js
+DEBUG_LOG_FILE_MAX_SIZE_MB=100 node server.js  # Optional: set max size (default: 50MB)
+```
+
+**Features:**
+- 🆔 **Unique UUID per request** - Perfect request isolation in multi-client environments
+- 📥 **Full incoming HTTP requests** - Headers, body, method, URL  
+- 📤 **Full outgoing HTTP responses** - Status, headers, formatted JSON responses
+- 🌐 **BrightData API calls** - All external API requests and responses
+- 📋 **jq-compatible JSONL format** - Easy parsing and filtering
+
+**jq Examples:**
+```bash
+# Filter logs for specific request
+jq 'select(.requestId == "SOME_UUID")' requests.log
+
+# Find all failed requests  
+jq 'select(.type | contains("ERROR"))' requests.log
+
+# View response status codes
+jq 'select(.type == "OUTGOING_HTTP_RESPONSE") | .data.statusCode' requests.log
+```
 
 ## Quick Start (HTTP Mode)
 
