@@ -3,7 +3,103 @@ import {UserError, imageContent as image_content} from 'fastmcp';
 import {z} from 'zod';
 import axios from 'axios';
 import {Browser_session} from './browser_session.js';
+import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
+
 let browser_zone = process.env.BROWSER_ZONE || 'mcp_browser';
+const debug_log_file = process.env.DEBUG_LOG_FILE;
+const debug_log_file_max_size_mb = parseInt(process.env.DEBUG_LOG_FILE_MAX_SIZE_MB || '50', 10);
+
+function debugLog(type, data) {
+    if (!debug_log_file) return;
+    
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${type}: ${JSON.stringify(data, null, 2)}\n\n`;
+    
+    try {
+        writeDebugLogWithRotation(debug_log_file, logEntry);
+    } catch (e) {
+        console.error('Failed to write to debug log file:', e.message);
+    }
+}
+
+function writeDebugLogWithRotation(filePath, logEntry) {
+    const maxSizeBytes = debug_log_file_max_size_mb * 1024 * 1024;
+    
+    if (existsSync(filePath)) {
+        const stats = statSync(filePath);
+        const currentSize = stats.size;
+        
+        if (currentSize + Buffer.byteLength(logEntry, 'utf8') > maxSizeBytes) {
+            try {
+                const existingContent = readFileSync(filePath, 'utf8');
+                const lines = existingContent.split('\n').filter(line => line.trim().length > 0);
+                
+                // Only rotate if we have enough content
+                if (lines.length > 10) {
+                    const removeCount = Math.floor(lines.length * 0.25);
+                    const trimmedLines = lines.slice(removeCount);
+                    writeFileSync(filePath, trimmedLines.join('\n') + '\n');
+                    console.error(`[Debug Log] Rotated log file: removed ${removeCount} old lines from ${filePath}`);
+                }
+            } catch (rotateError) {
+                console.error('Failed to rotate debug log file:', rotateError.message);
+            }
+        }
+    }
+    
+    appendFileSync(filePath, logEntry);
+}
+
+async function loggedAxios(config) {
+    const requestId = Math.random().toString(36).substr(2, 9);
+    const startTime = Date.now();
+    
+    if (debug_log_file) {
+        debugLog(`HTTP_REQUEST_${requestId}`, {
+            url: config.url,
+            method: config.method,
+            headers: config.headers,
+            data: config.data,
+            params: config.params
+        });
+    }
+    
+    try {
+        const response = await axios(config);
+        const duration = Date.now() - startTime;
+        
+        if (debug_log_file) {
+            debugLog(`HTTP_RESPONSE_${requestId}`, {
+                url: config.url,
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                data: typeof response.data === 'string' && response.data.length > 1000 
+                    ? response.data.substring(0, 1000) + '... (truncated)' 
+                    : response.data,
+                duration_ms: duration
+            });
+        }
+        
+        return response;
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        
+        if (debug_log_file) {
+            debugLog(`HTTP_ERROR_${requestId}`, {
+                url: config.url,
+                error: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                headers: error.response?.headers,
+                data: error.response?.data,
+                duration_ms: duration
+            });
+        }
+        
+        throw error;
+    }
+}
 
 let open_session;
 const require_browser = async()=>{
@@ -18,13 +114,13 @@ const require_browser = async()=>{
 
 const calculate_cdp_endpoint = async()=>{
     try {
-        const status_response = await axios({
+        const status_response = await loggedAxios({
             url: 'https://api.brightdata.com/status',
             method: 'GET',
             headers: {authorization: `Bearer ${process.env.API_TOKEN}`},
         });
         const customer = status_response.data.customer;
-        const password_response = await axios({
+        const password_response = await loggedAxios({
             url: `https://api.brightdata.com/zone/passwords?zone=${browser_zone}`,
             method: 'GET',
             headers: {authorization: `Bearer ${process.env.API_TOKEN}`},

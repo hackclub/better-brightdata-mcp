@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 'use strict'; /*jslint node:true es9:true*/
+import 'dotenv/config';
 import {FastMCP} from 'fastmcp';
 import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
 import {createRequire} from 'node:module';
-import {appendFileSync} from 'fs';
+import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
+import http from 'http';
+import crypto from 'crypto';
 const require = createRequire(import.meta.url);
 const package_json = require('./package.json');
 let api_token = process.env.API_TOKEN;
@@ -15,6 +18,8 @@ const pro_mode = process.env.PRO_MODE === 'true';
 const http_port = parseInt(process.env.HTTP_PORT || '3000', 10);
 const transport_type = process.env.TRANSPORT_TYPE || 'stdio'; // 'stdio' or 'http'
 const debug_log_to_file = process.env.DEBUG_LOG_TO_FILE === 'true';
+const debug_log_file = process.env.DEBUG_LOG_FILE;
+const debug_log_file_max_size_mb = parseInt(process.env.DEBUG_LOG_FILE_MAX_SIZE_MB || '50', 10);
 const pro_mode_tools = [
     'search_engine', 
     'get_page_previews', 
@@ -84,11 +89,11 @@ function check_rate_limit(){
 async function ensure_required_zones(){
     try {
         console.error('Checking for required zones...');
-        let response = await axios({
+        let response = await loggedAxios({
             url: 'https://api.brightdata.com/zone/get_active_zones',
             method: 'GET',
             headers: api_headers(),
-        });
+        }, 'startup');
         let zones = response.data || [];
         let has_unlocker_zone = zones.some(zone=>zone.name==unlocker_zone);
         let has_browser_zone = zones.some(zone=>zone.name==browser_zone);
@@ -97,7 +102,7 @@ async function ensure_required_zones(){
         {
             console.error(`Required zone "${unlocker_zone}" not found, `
                 +`creating it...`);
-            await axios({
+            await loggedAxios({
                 url: 'https://api.brightdata.com/zone',
                 method: 'POST',
                 headers: {
@@ -108,7 +113,7 @@ async function ensure_required_zones(){
                     zone: {name: unlocker_zone, type: 'unblocker'},
                     plan: {type: 'unblocker'},
                 },
-            });
+            }, 'startup');
             console.error(`Zone "${unlocker_zone}" created successfully`);
         }
         else
@@ -118,7 +123,7 @@ async function ensure_required_zones(){
         {
             console.error(`Required zone "${browser_zone}" not found, `
                 +`creating it...`);
-            await axios({
+            await loggedAxios({
                 url: 'https://api.brightdata.com/zone',
                 method: 'POST',
                 headers: {
@@ -129,7 +134,7 @@ async function ensure_required_zones(){
                     zone: {name: browser_zone, type: 'browser_api'},
                     plan: {type: 'browser_api'},
                 },
-            });
+            }, 'startup');
             console.error(`Zone "${browser_zone}" created successfully`);
         }
         else
@@ -151,6 +156,9 @@ let server = new FastMCP({
     name: 'Bright Data',
     version: package_json.version,
     authenticate: transport_type === 'http' ? (request) => {
+        // Get the requestId that was set at HTTP level
+        const requestId = request.req?._httpRequestId || crypto.randomUUID();
+        
         // Always allow requests through, but capture auth info
         const authHeader = request.headers.authorization;
         
@@ -161,6 +169,7 @@ let server = new FastMCP({
                 token: token,
                 headers: request.headers,
                 authenticated: true,
+                requestId: requestId,
             };
         }
         
@@ -169,6 +178,7 @@ let server = new FastMCP({
             token: null,
             headers: request.headers,
             authenticated: false,
+            requestId: requestId,
         };
     } : undefined,
 });
@@ -213,9 +223,9 @@ function cleanupExpiredCache() {
 // Start cleanup timer (every 2 minutes for more aggressive cleanup)
 const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
 
-async function fetchMarkdownRaw(url, context_token = null) {
+async function fetchMarkdownRaw(url, context_token = null, parentRequestId = null) {
     try {
-        let response = await axios({
+        let response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -226,7 +236,7 @@ async function fetchMarkdownRaw(url, context_token = null) {
             },
             headers: api_headers(context_token),
             responseType: 'text',
-        });
+        }, parentRequestId);
         return response.data;
     } catch (error) {
         // Add more detailed error information for debugging
@@ -241,7 +251,7 @@ async function fetchMarkdownRaw(url, context_token = null) {
     }
 }
 
-async function getMarkdownWithCache(url, context_token = null) {
+async function getMarkdownWithCache(url, context_token = null, parentRequestId = null) {
     const now = Date.now();
     let cached = pageCache.get(url);
     
@@ -260,7 +270,7 @@ async function getMarkdownWithCache(url, context_token = null) {
     }
     
     console.error(`[Cache MISS] Fetching ${url}`);
-    const rawContent = await fetchMarkdownRaw(url, context_token);
+    const rawContent = await fetchMarkdownRaw(url, context_token, parentRequestId);
     const strippedContent = stripImageLinks(rawContent); // Strip image links first
     const processedContent = processLongLines(strippedContent); // Process long lines before caching
     const fetchedAt = Date.now();
@@ -540,16 +550,214 @@ function previewText(content, preview_lines, url = null) {
     };
 }
 
-function debugLog(type, data) {
-    if (!debug_log_to_file) return;
-    
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ${type}: ${JSON.stringify(data, null, 2)}\n\n`;
+function formatResponseBody(body) {
+    if (!body || typeof body !== 'string') return body;
     
     try {
-        appendFileSync('debug_log', logEntry);
+        // Try to parse as JSON and format it nicely
+        const parsed = JSON.parse(body);
+        return JSON.stringify(parsed, null, 2);
     } catch (e) {
-        console.error('Failed to write debug log:', e.message);
+        // If not JSON, check if it's Server-Sent Events format
+        if (body.includes('event: message') && body.includes('data: ')) {
+            const lines = body.split('\n');
+            const formatted = [];
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const jsonData = line.substring(6);
+                    try {
+                        const parsed = JSON.parse(jsonData);
+                        formatted.push('data:');
+                        const prettyJson = JSON.stringify(parsed, null, 2);
+                        // Indent each line of the JSON
+                        const indentedJson = prettyJson.split('\n').map(jsonLine => 
+                            '  ' + jsonLine
+                        ).join('\n');
+                        formatted.push(indentedJson);
+                    } catch (e) {
+                        formatted.push(line);
+                    }
+                } else {
+                    formatted.push(line);
+                }
+            }
+            return formatted.join('\n');
+        }
+        
+        // Return original if not JSON
+        return body;
+    }
+}
+
+function debugLog(type, data, requestId = null) {
+    const logToConsole = debug_log_to_file;
+    const logToFile = debug_log_file;
+    
+    if (!logToConsole && !logToFile) return;
+    
+    const timestamp = new Date().toISOString();
+    
+    // For DEBUG_LOG_TO_FILE (legacy format)
+    if (logToConsole) {
+        const legacyEntry = `[${timestamp}] ${type}: ${JSON.stringify(data, null, 2)}\n\n`;
+        try {
+            appendFileSync('debug_log', legacyEntry);
+        } catch (e) {
+            console.error('Failed to write to debug_log:', e.message);
+        }
+    }
+    
+    // For DEBUG_LOG_FILE (jq-compatible JSONL format)
+    if (logToFile) {
+        // Format the data specially if it contains response body
+        let formattedData = { ...data };
+        if (data.body && typeof data.body === 'string') {
+            const formatted = formatResponseBody(data.body);
+            // Only truncate if the formatted response is extremely large
+            if (formatted.length > 50000) {
+                formattedData.body = formatted.substring(0, 50000) + '\n... (truncated for log size)';
+            } else {
+                formattedData.body = formatted;
+            }
+        }
+        
+        // Create jq-compatible JSONL entry (one JSON object per line)
+        const logEntry = {
+            timestamp,
+            type,
+            requestId,
+            data: formattedData
+        };
+        
+        const jsonlEntry = JSON.stringify(logEntry) + '\n';
+        
+        try {
+            writeDebugLogWithRotation(logToFile, jsonlEntry);
+        } catch (e) {
+            console.error('Failed to write to debug log file:', e.message);
+        }
+    }
+}
+
+function writeDebugLogWithRotation(filePath, logEntry) {
+    const maxSizeBytes = debug_log_file_max_size_mb * 1024 * 1024;
+    
+    // Check if file exists and its current size
+    let currentSize = 0;
+    
+    if (existsSync(filePath)) {
+        const stats = statSync(filePath);
+        currentSize = stats.size;
+        
+        // If adding this entry would exceed the limit, trim the file
+        if (currentSize + Buffer.byteLength(logEntry, 'utf8') > maxSizeBytes) {
+            try {
+                const existingContent = readFileSync(filePath, 'utf8');
+                const lines = existingContent.split('\n').filter(line => line.trim().length > 0);
+                
+                // Only rotate if we have enough content
+                if (lines.length > 10) {
+                    const removeCount = Math.floor(lines.length * 0.25);
+                    const trimmedLines = lines.slice(removeCount);
+                    writeFileSync(filePath, trimmedLines.join('\n') + '\n');
+                    console.error(`[Debug Log] Rotated log file: removed ${removeCount} old lines from ${filePath}`);
+                }
+            } catch (rotateError) {
+                console.error('Failed to rotate debug log file:', rotateError.message);
+                // If rotation fails, just append anyway
+            }
+        }
+    }
+    
+    // Append the new log entry
+    appendFileSync(filePath, logEntry);
+}
+
+// Track current request context for console logging
+let currentRequestId = null;
+
+// Intercept console output if DEBUG_LOG_FILE is set
+if (debug_log_file) {
+    const originalConsoleLog = console.log;
+    const originalConsoleError = console.error;
+    
+    console.log = function(...args) {
+        originalConsoleLog(...args);
+        if (debug_log_file) {
+            debugLog('STDOUT', { message: args.join(' ') }, currentRequestId);
+        }
+    };
+    
+    console.error = function(...args) {
+        // Don't log our own rotation messages to avoid recursion
+        const message = args.join(' ');
+        if (!message.includes('[Debug Log] Rotated log file')) {
+            originalConsoleError(...args);
+            if (debug_log_file) {
+                debugLog('STDERR', { message }, currentRequestId);
+            }
+        } else {
+            originalConsoleError(...args);
+        }
+    };
+}
+
+// Store request UUIDs for correlation across the request lifecycle  
+const requestUuidMap = new Map(); // Maps req object to UUID
+
+// Enhanced HTTP logging wrapper
+async function loggedAxios(config, parentRequestId = null) {
+    const httpCallId = Math.random().toString(36).substr(2, 9);
+    const startTime = Date.now();
+    
+    // Log the HTTP request if DEBUG_LOG_FILE is set
+    if (debug_log_file) {
+        debugLog(`HTTP_REQUEST_${httpCallId}`, {
+            url: config.url,
+            method: config.method,
+            headers: config.headers,
+            data: config.data,
+            params: config.params
+        }, parentRequestId);
+    }
+    
+    try {
+        const response = await axios(config);
+        const duration = Date.now() - startTime;
+        
+        // Log the HTTP response if DEBUG_LOG_FILE is set
+        if (debug_log_file) {
+            debugLog(`HTTP_RESPONSE_${httpCallId}`, {
+                url: config.url,
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                data: typeof response.data === 'string' && response.data.length > 1000 
+                    ? response.data.substring(0, 1000) + '... (truncated)' 
+                    : response.data,
+                duration_ms: duration
+            }, parentRequestId);
+        }
+        
+        return response;
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        
+        // Log HTTP errors if DEBUG_LOG_FILE is set
+        if (debug_log_file) {
+            debugLog(`HTTP_ERROR_${httpCallId}`, {
+                url: config.url,
+                error: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                headers: error.response?.headers,
+                data: error.response?.data,
+                duration_ms: duration
+            }, parentRequestId);
+        }
+        
+        throw error;
     }
 }
 
@@ -635,7 +843,7 @@ addTool({
             try {
                 const { query, engine = 'google', cursor } = queryObj;
                 
-                let response = await axios({
+                let response = await loggedAxios({
                     url: 'https://api.brightdata.com/request',
                     method: 'POST',
                     data: {
@@ -646,7 +854,7 @@ addTool({
                     },
                     headers: api_headers(ctx?.session?.token),
                     responseType: 'text',
-                });
+                }, ctx?.requestId);
 
                 let processedContent = response.data;
                 
@@ -904,7 +1112,7 @@ addTool({
     +'CAPTCHA.',
     parameters: z.object({url: z.string().url()}),
     execute: tool_fn('scrape_as_html', async({url})=>{
-        let response = await axios({
+        let response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -914,7 +1122,7 @@ addTool({
             },
             headers: api_headers(),
             responseType: 'text',
-        });
+        }, currentRequestId);
         return response.data;
     }),
 });
@@ -933,7 +1141,7 @@ addTool({
         ),
     }),
     execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => {
-        let scrape_response = await axios({
+        let scrape_response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -944,7 +1152,7 @@ addTool({
             },
             headers: api_headers(),
             responseType: 'text',
-        });
+        }, ctx?.requestId);
 
         let markdown_content = scrape_response.data;
 
@@ -1400,13 +1608,13 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
         description,
         parameters: z.object(parameters),
         execute: tool_fn(`web_data_${id}`, async(data, ctx)=>{
-            let trigger_response = await axios({
+            let trigger_response = await loggedAxios({
                 url: 'https://api.brightdata.com/datasets/v3/trigger',
                 params: {dataset_id, include_errors: true},
                 method: 'POST',
                 data: [data],
                 headers: api_headers(),
-            });
+            }, ctx?.requestId);
             if (!trigger_response.data?.snapshot_id)
                 throw new Error('No snapshot ID returned from request');
             let snapshot_id = trigger_response.data.snapshot_id;
@@ -1426,13 +1634,13 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
                                 +`${attempts + 1}/${max_attempts})`,
                         });
                     }
-                    let snapshot_response = await axios({
+                    let snapshot_response = await loggedAxios({
                         url: `https://api.brightdata.com/datasets/v3`
                             +`/snapshot/${snapshot_id}`,
                         params: {format: 'json'},
                         method: 'GET',
                         headers: api_headers(),
-                    });
+                    }, ctx?.requestId);
                     if (['running', 'building'].includes(snapshot_response.data?.status))
                     {
                         console.error(`[web_data_${id}] snapshot not ready, `
@@ -1462,6 +1670,59 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
 for (let tool of browser_tools)
     addTool(tool);
 
+// Add HTTP response logging by intercepting the server creation
+if (debug_log_file && transport_type === 'http') {
+    const originalCreateServer = http.createServer;
+    
+    http.createServer = function(requestListener) {
+        const wrappedListener = (req, res) => {
+            // Generate UUID immediately when request arrives at HTTP level
+            const httpRequestId = crypto.randomUUID();
+            req._httpRequestId = httpRequestId;
+            
+            // Log incoming HTTP request immediately at HTTP level
+            debugLog('INCOMING_HTTP_REQUEST', {
+                method: req.method,
+                url: req.url,
+                headers: req.headers,
+                timestamp: new Date().toISOString()
+            }, httpRequestId);
+            
+            const originalWrite = res.write;
+            const originalEnd = res.end;
+            let responseBody = '';
+            
+            res.write = function(chunk, encoding) {
+                if (chunk) responseBody += chunk.toString();
+                return originalWrite.call(this, chunk, encoding);
+            };
+            
+            res.end = function(data) {
+                if (data) responseBody += data.toString();
+                
+                // Use the same UUID that was generated for the incoming request
+                const requestId = req._httpRequestId;
+                
+                // Log the complete outgoing HTTP response
+                debugLog('OUTGOING_HTTP_RESPONSE', {
+                    statusCode: this.statusCode,
+                    statusMessage: this.statusMessage,
+                    headers: this.getHeaders(),
+                    body: responseBody,
+                    bodySize: responseBody.length,
+                    timestamp: new Date().toISOString()
+                }, requestId);
+                
+                return originalEnd.call(this, data);
+            };
+            
+            return requestListener(req, res);
+        };
+        
+        return originalCreateServer.call(this, wrappedListener);
+    };
+}
+
 console.error('Starting server...');
 if (transport_type === 'http') {
     console.error(`Starting HTTP server on port ${http_port}...`);
@@ -1486,17 +1747,22 @@ if (transport_type === 'http') {
 }
 function tool_fn(name, fn){
     return async(data, ctx)=>{
+        const requestId = ctx?.session?.requestId || null;
+        const previousRequestId = currentRequestId;
+        currentRequestId = requestId; // Set current request context
+        
         // In HTTP mode, check that we have a valid token for tool calls
         if (transport_type === 'http' && !ctx?.session?.authenticated) {
             throw new Error('Authentication required: tool calls need Authorization: Bearer token');
         }
         
-        // Debug log the request
-        debugLog(`REQUEST_${name}`, {
+        // Debug log the MCP tool request
+        debugLog(`MCP_TOOL_REQUEST_${name}`, {
             tool: name,
             data: data,
             session: ctx?.session ? { authenticated: ctx.session.authenticated } : null,
-        });
+            timestamp: new Date().toISOString()
+        }, requestId);
         
         check_rate_limit();
         debug_stats.tool_calls[name] = debug_stats.tool_calls[name]||0;
@@ -1505,26 +1771,34 @@ function tool_fn(name, fn){
         let ts = Date.now();
         console.error(`[%s] executing %s`, name, JSON.stringify(data));
         try { 
-            const result = await fn(data, ctx);
+            // Create a modified context that includes requestId for axios calls
+            const modifiedCtx = { ...ctx, requestId };
+            const result = await fn(data, modifiedCtx);
             
-            // Debug log the response
-            debugLog(`RESPONSE_${name}`, {
+            // Debug log the MCP tool response
+            debugLog(`MCP_TOOL_RESPONSE_${name}`, {
                 tool: name,
                 duration_ms: Date.now() - ts,
-                result: result,
-            });
+                result: typeof result === 'string' && result.length > 2000 
+                    ? result.substring(0, 2000) + '... (truncated for logging)' 
+                    : result,
+                success: true,
+                timestamp: new Date().toISOString()
+            }, requestId);
             
             return result;
         }
         catch(e){
-            // Debug log the error
-            debugLog(`ERROR_${name}`, {
+            // Debug log the MCP tool error
+            debugLog(`MCP_TOOL_ERROR_${name}`, {
                 tool: name,
                 duration_ms: Date.now() - ts,
                 error: e.message,
                 status: e.response?.status,
                 data: e.response?.data,
-            });
+                success: false,
+                timestamp: new Date().toISOString()
+            }, requestId);
             
         if (e.response)
             {
@@ -1557,6 +1831,7 @@ function tool_fn(name, fn){
                 console.error(`[%s] error %s`, name, e.stack);
             throw e;
         } finally {
+            currentRequestId = previousRequestId; // Restore previous context
             let dur = Date.now()-ts;
             console.error(`[%s] tool finished in %sms`, name, dur);
         }
