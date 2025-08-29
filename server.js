@@ -1736,10 +1736,11 @@ if (transport_type === 'http') {
         transportType: 'httpStream',
         httpStream: {
             port: http_port,
+            host: '0.0.0.0',  // Bind to all network interfaces
             stateless: true  // Enable stateless mode for simpler HTTP API usage
         }
     });
-    console.error(`✅ MCP server running at http://localhost:${http_port}/mcp`);
+    console.error(`✅ MCP server running at http://0.0.0.0:${http_port}/mcp`);
     console.error(`Usage: Send requests with Authorization: Bearer YOUR_API_TOKEN header`);
     console.error(`Pro mode: Add ?pro_mode=true to URL`);
 } else {
