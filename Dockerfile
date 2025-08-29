@@ -28,8 +28,9 @@ ENV TRANSPORT_TYPE=http
 ENV HTTP_PORT=3000
 ENV NODE_ENV=production
 
-# Install only production dependencies
-RUN npm ci --ignore-scripts --omit=dev
+# Install curl and production dependencies
+RUN apk add --no-cache curl && \
+    npm ci --ignore-scripts --omit=dev
 
 # Expose port (Coolify will handle port mapping)
 EXPOSE 3000
