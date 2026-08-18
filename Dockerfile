@@ -18,9 +18,7 @@ FROM oven/bun:1-slim AS release
 WORKDIR /app
 
 # Copy necessary files from builder
-COPY --from=builder /app/server.js /app/
-COPY --from=builder /app/browser_tools.js /app/
-COPY --from=builder /app/browser_session.js /app/
+COPY --from=builder /app/*.js /app/
 COPY --from=builder /app/package.json /app/
 COPY --from=builder /app/bun.lock /app/
 
