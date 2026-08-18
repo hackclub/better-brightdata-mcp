@@ -5,6 +5,7 @@ import {FastMCP} from 'fastmcp';
 import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
+import {heavyOpsSemaphore} from './concurrency.js';
 import {createRequire} from 'node:module';
 import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
 import http from 'http';
@@ -1110,7 +1111,7 @@ addTool({
     +'This tool can unlock any webpage even if it uses bot detection or '
     +'CAPTCHA.',
     parameters: z.object({url: z.string().url()}),
-    execute: tool_fn('scrape_as_html', async({url}, ctx)=>{
+    execute: tool_fn('scrape_as_html', async({url}, ctx)=>heavyOpsSemaphore.run(async()=>{
         let response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
@@ -1123,7 +1124,7 @@ addTool({
             responseType: 'text',
         }, currentRequestId);
         return response.data;
-    }),
+    })),
 });
 
 addTool({
@@ -1139,7 +1140,7 @@ addTool({
             + 'will extract general structured data from the page.'
         ),
     }),
-    execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => {
+    execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => heavyOpsSemaphore.run(async()=>{
         let scrape_response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
@@ -1180,7 +1181,7 @@ addTool({
         });
 
         return sampling_response.content.text;
-    }),
+    })),
 });
 
 addTool({
@@ -1606,7 +1607,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
         name: `web_data_${id}`,
         description,
         parameters: z.object(parameters),
-        execute: tool_fn(`web_data_${id}`, async(data, ctx)=>{
+        execute: tool_fn(`web_data_${id}`, async(data, ctx)=>heavyOpsSemaphore.run(async()=>{
             let trigger_response = await loggedAxios({
                 url: 'https://api.brightdata.com/datasets/v3/trigger',
                 params: {dataset_id, include_errors: true},
@@ -1662,7 +1663,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
             }
             throw new Error(`Timeout after ${max_attempts} seconds waiting `
                 +`for data`);
-        }),
+        })),
     });
 }
 

@@ -4,6 +4,7 @@ import {z} from 'zod';
 import axios from 'axios';
 import {Browser_session} from './browser_session.js';
 import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
+import {heavyOpsSemaphore} from './concurrency.js';
 
 let browser_zone = process.env.BROWSER_ZONE || 'mcp_browser';
 const debug_log_file = process.env.DEBUG_LOG_FILE;
@@ -299,7 +300,7 @@ let scraping_browser_screenshot = {
             +'images can be quite large',
         ].join('\n')),
     }),
-    execute: async({full_page = false})=>{
+    execute: ({full_page = false})=>heavyOpsSemaphore.run(async()=>{
         const page = await (await require_browser()).get_page();
         try {
             const buffer = await page.screenshot({fullPage: full_page});
@@ -307,7 +308,7 @@ let scraping_browser_screenshot = {
         } catch(e){
             throw new UserError(`Error taking screenshot: ${e}`);
         }
-    },
+    }),
 };
 
 let scraping_browser_get_html = {
@@ -322,7 +323,7 @@ let scraping_browser_get_html = {
             +'quite large',
         ].join('\n')),
     }),
-    execute: async({full_page = false})=>{
+    execute: ({full_page = false})=>heavyOpsSemaphore.run(async()=>{
         const page = await (await require_browser()).get_page();
         try {
             if (!full_page)
@@ -334,7 +335,7 @@ let scraping_browser_get_html = {
         } catch(e){
             throw new UserError(`Error getting HTML content: ${e}`);
         }
-    },
+    }),
 };
 
 let scraping_browser_get_text = {
