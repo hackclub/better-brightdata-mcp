@@ -164,7 +164,6 @@ let server = new FastMCP({
         
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.substring(7);
-            api_token = token; // Update global token
             return {
                 token: token,
                 headers: request.headers,
@@ -1111,7 +1110,7 @@ addTool({
     +'This tool can unlock any webpage even if it uses bot detection or '
     +'CAPTCHA.',
     parameters: z.object({url: z.string().url()}),
-    execute: tool_fn('scrape_as_html', async({url})=>{
+    execute: tool_fn('scrape_as_html', async({url}, ctx)=>{
         let response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
@@ -1120,7 +1119,7 @@ addTool({
                 zone: unlocker_zone,
                 format: 'raw',
             },
-            headers: api_headers(),
+            headers: api_headers(ctx?.session?.token),
             responseType: 'text',
         }, currentRequestId);
         return response.data;
@@ -1150,7 +1149,7 @@ addTool({
                 format: 'raw',
                 data_format: 'markdown',
             },
-            headers: api_headers(),
+            headers: api_headers(ctx?.session?.token),
             responseType: 'text',
         }, ctx?.requestId);
 
@@ -1613,7 +1612,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
                 params: {dataset_id, include_errors: true},
                 method: 'POST',
                 data: [data],
-                headers: api_headers(),
+                headers: api_headers(ctx?.session?.token),
             }, ctx?.requestId);
             if (!trigger_response.data?.snapshot_id)
                 throw new Error('No snapshot ID returned from request');
@@ -1639,7 +1638,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
                             +`/snapshot/${snapshot_id}`,
                         params: {format: 'json'},
                         method: 'GET',
-                        headers: api_headers(),
+                        headers: api_headers(ctx?.session?.token),
                     }, ctx?.requestId);
                     if (['running', 'building'].includes(snapshot_response.data?.status))
                     {
