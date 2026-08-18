@@ -27,10 +27,8 @@ ENV TRANSPORT_TYPE=http
 ENV HTTP_PORT=3000
 ENV NODE_ENV=production
 
-# Install curl and production dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/* && \
-    bun install --production --ignore-scripts
+# Install production dependencies
+RUN bun install --production --ignore-scripts
 
 # Expose port (Coolify will handle port mapping)
 EXPOSE 3000
