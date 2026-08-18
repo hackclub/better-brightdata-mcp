@@ -15,9 +15,9 @@ startCommand:
         default: 'mcp_browser'
         description: "Optional: Zone name for the Browser API (enables browser control tools, deafults to 'mcp_browser')"
   commandFunction: |-
-    config => ({ 
-      command: 'node', 
-      args: ['server.js'], 
+    config => ({
+      command: 'bun',
+      args: ['server.js'],
       env: { 
         API_TOKEN: config.apiToken,
         WEB_UNLOCKER_ZONE: config.webUnlockerZone,

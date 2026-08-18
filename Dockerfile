@@ -1,19 +1,19 @@
 # Multi-stage build for smaller production image
-FROM node:22.12-alpine AS builder
+FROM oven/bun:1-slim AS builder
 
 WORKDIR /app
 
 # Copy package files for better caching
-COPY package*.json ./
+COPY package.json bun.lock ./
 
 # Install all dependencies (including dev dependencies for build)
-RUN --mount=type=cache,target=/root/.npm npm install
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 
 # Copy source code
 COPY . .
 
 # Production stage
-FROM node:22-alpine AS release
+FROM oven/bun:1-slim AS release
 
 WORKDIR /app
 
@@ -21,7 +21,8 @@ WORKDIR /app
 COPY --from=builder /app/server.js /app/
 COPY --from=builder /app/browser_tools.js /app/
 COPY --from=builder /app/browser_session.js /app/
-COPY --from=builder /app/package*.json /app/
+COPY --from=builder /app/package.json /app/
+COPY --from=builder /app/bun.lock /app/
 
 # Set environment variables for HTTP mode (default for Coolify)
 ENV TRANSPORT_TYPE=http
@@ -29,11 +30,12 @@ ENV HTTP_PORT=3000
 ENV NODE_ENV=production
 
 # Install curl and production dependencies
-RUN apk add --no-cache curl && \
-    npm ci --ignore-scripts --omit=dev
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    bun install --production --ignore-scripts
 
 # Expose port (Coolify will handle port mapping)
 EXPOSE 3000
 
 # Start the server
-CMD ["node", "server.js"]
+CMD ["bun", "server.js"]
