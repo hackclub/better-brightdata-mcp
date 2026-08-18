@@ -300,15 +300,20 @@ let scraping_browser_screenshot = {
             +'images can be quite large',
         ].join('\n')),
     }),
-    execute: ({full_page = false})=>heavyOpsSemaphore.run(async()=>{
-        const page = await (await require_browser()).get_page();
+    execute: async({full_page = false})=>{
+        await heavyOpsSemaphore.acquire();
         try {
-            const buffer = await page.screenshot({fullPage: full_page});
-            return image_content({buffer});
-        } catch(e){
-            throw new UserError(`Error taking screenshot: ${e}`);
+            const page = await (await require_browser()).get_page();
+            try {
+                const buffer = await page.screenshot({fullPage: full_page});
+                return image_content({buffer});
+            } catch(e){
+                throw new UserError(`Error taking screenshot: ${e}`);
+            }
+        } finally {
+            heavyOpsSemaphore.release();
         }
-    }),
+    },
 };
 
 let scraping_browser_get_html = {
@@ -323,19 +328,24 @@ let scraping_browser_get_html = {
             +'quite large',
         ].join('\n')),
     }),
-    execute: ({full_page = false})=>heavyOpsSemaphore.run(async()=>{
-        const page = await (await require_browser()).get_page();
+    execute: async({full_page = false})=>{
+        await heavyOpsSemaphore.acquire();
         try {
-            if (!full_page)
-                return await page.$eval('body', body=>body.innerHTML);
-            const html = await page.content();
-            if (!full_page && html)
-                return html.split('<body>')[1].split('</body>')[0];
-            return html;
-        } catch(e){
-            throw new UserError(`Error getting HTML content: ${e}`);
+            const page = await (await require_browser()).get_page();
+            try {
+                if (!full_page)
+                    return await page.$eval('body', body=>body.innerHTML);
+                const html = await page.content();
+                if (!full_page && html)
+                    return html.split('<body>')[1].split('</body>')[0];
+                return html;
+            } catch(e){
+                throw new UserError(`Error getting HTML content: ${e}`);
+            }
+        } finally {
+            heavyOpsSemaphore.release();
         }
-    }),
+    },
 };
 
 let scraping_browser_get_text = {

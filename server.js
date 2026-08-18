@@ -6,6 +6,7 @@ import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
 import {heavyOpsSemaphore} from './concurrency.js';
+import {startHeartbeat} from './heartbeat.js';
 import {createRequire} from 'node:module';
 import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
 import http from 'http';
@@ -913,7 +914,7 @@ addTool({
             results,
             timeout_ms: 50000,
         }, null, 2);
-    }),
+    }, {heartbeat: true}),
 });
 
 
@@ -979,7 +980,7 @@ addTool({
             timeout_ms: 50000,
             results,
         }, null, 2);
-    }),
+    }, {heartbeat: true}),
 });
 
 addTool({
@@ -1101,7 +1102,7 @@ addTool({
             max_matches_limit: max_matches,
             results: matches,
         }, null, 2);
-    }),
+    }, {heartbeat: true}),
 });
 
 addTool({
@@ -1111,7 +1112,7 @@ addTool({
     +'This tool can unlock any webpage even if it uses bot detection or '
     +'CAPTCHA.',
     parameters: z.object({url: z.string().url()}),
-    execute: tool_fn('scrape_as_html', async({url}, ctx)=>heavyOpsSemaphore.run(async()=>{
+    execute: tool_fn('scrape_as_html', async({url}, ctx)=>{
         let response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
@@ -1124,7 +1125,7 @@ addTool({
             responseType: 'text',
         }, currentRequestId);
         return response.data;
-    })),
+    }, {throttle: true, heartbeat: true}),
 });
 
 addTool({
@@ -1140,7 +1141,7 @@ addTool({
             + 'will extract general structured data from the page.'
         ),
     }),
-    execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => heavyOpsSemaphore.run(async()=>{
+    execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => {
         let scrape_response = await loggedAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
@@ -1181,7 +1182,7 @@ addTool({
         });
 
         return sampling_response.content.text;
-    })),
+    }, {throttle: true, heartbeat: true}),
 });
 
 addTool({
@@ -1607,7 +1608,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
         name: `web_data_${id}`,
         description,
         parameters: z.object(parameters),
-        execute: tool_fn(`web_data_${id}`, async(data, ctx)=>heavyOpsSemaphore.run(async()=>{
+        execute: tool_fn(`web_data_${id}`, async(data, ctx)=>{
             let trigger_response = await loggedAxios({
                 url: 'https://api.brightdata.com/datasets/v3/trigger',
                 params: {dataset_id, include_errors: true},
@@ -1663,7 +1664,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
             }
             throw new Error(`Timeout after ${max_attempts} seconds waiting `
                 +`for data`);
-        })),
+        }, {throttle: true}),
     });
 }
 
@@ -1746,7 +1747,7 @@ if (transport_type === 'http') {
 } else {
     server.start({transportType: 'stdio'});
 }
-function tool_fn(name, fn){
+function tool_fn(name, fn, options = {}){
     return async(data, ctx)=>{
         const requestId = ctx?.session?.requestId || null;
         const previousRequestId = currentRequestId;
@@ -1771,11 +1772,25 @@ function tool_fn(name, fn){
         debug_stats.session_calls++;
         let ts = Date.now();
         console.error(`[%s] executing %s`, name, JSON.stringify(data));
-        try { 
+        try {
             // Create a modified context that includes requestId for axios calls
             const modifiedCtx = { ...ctx, requestId };
-            const result = await fn(data, modifiedCtx);
-            
+            const stopHeartbeat = options.heartbeat
+                ? startHeartbeat(ctx, typeof options.heartbeat === 'string'
+                    ? options.heartbeat : `${name} still running`)
+                : null;
+            if (options.throttle)
+                await heavyOpsSemaphore.acquire();
+            let result;
+            try {
+                result = await fn(data, modifiedCtx);
+            } finally {
+                if (options.throttle)
+                    heavyOpsSemaphore.release();
+                if (stopHeartbeat)
+                    stopHeartbeat();
+            }
+
             // Debug log the MCP tool response
             debugLog(`MCP_TOOL_RESPONSE_${name}`, {
                 tool: name,
