@@ -1664,7 +1664,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
             }
             throw new Error(`Timeout after ${max_attempts} seconds waiting `
                 +`for data`);
-        }, {throttle: true}),
+        }, {throttle: true, heartbeat: true}),
     });
 }
 
