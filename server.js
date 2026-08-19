@@ -1621,7 +1621,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
             let snapshot_id = trigger_response.data.snapshot_id;
             console.error(`[web_data_${id}] triggered collection with `
                 +`snapshot ID: ${snapshot_id}`);
-            let max_attempts = 600;
+            let max_attempts = parseInt(process.env.POLLING_TIMEOUT || '120', 10);
             let attempts = 0;
             while (attempts < max_attempts)
             {
