@@ -226,7 +226,7 @@ const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
 
 async function fetchMarkdownRaw(url, context_token = null, parentRequestId = null) {
     try {
-        let response = await loggedAxios({
+        let response = await retryableAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -240,7 +240,6 @@ async function fetchMarkdownRaw(url, context_token = null, parentRequestId = nul
         }, parentRequestId);
         return response.data;
     } catch (error) {
-        // Add more detailed error information for debugging
         console.error(`[fetchMarkdownRaw] Error fetching ${url}:`, {
             status: error.response?.status,
             statusText: error.response?.statusText,
@@ -708,6 +707,34 @@ if (debug_log_file) {
 const requestUuidMap = new Map(); // Maps req object to UUID
 
 // Enhanced HTTP logging wrapper
+const BASE_MAX_RETRIES = Math.min(
+    parseInt(process.env.BASE_MAX_RETRIES || '3', 10), 5);
+const RETRY_BASE_DELAY_MS = 1000;
+
+async function retryableAxios(config, parentRequestId = null) {
+    let lastErr;
+    for (let attempt = 0; attempt <= BASE_MAX_RETRIES; attempt++) {
+        try {
+            return await loggedAxios(config, parentRequestId);
+        } catch (e) {
+            lastErr = e;
+            const status = e.response?.status;
+            if (status && status >= 400 && status < 500)
+                throw e;
+            const code = e.code;
+            const retryable = !status || status >= 500
+                || code === 'ECONNREFUSED' || code === 'ETIMEDOUT'
+                || code === 'ECONNRESET';
+            if (!retryable || attempt === BASE_MAX_RETRIES)
+                throw e;
+            const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+            console.error(`[retryableAxios] ${config.url} failed (${status || code}), retrying in ${delay}ms (attempt ${attempt + 1}/${BASE_MAX_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+    throw lastErr;
+}
+
 async function loggedAxios(config, parentRequestId = null) {
     const httpCallId = Math.random().toString(36).substr(2, 9);
     const startTime = Date.now();
@@ -844,7 +871,7 @@ addTool({
             try {
                 const { query, engine = 'google', cursor } = queryObj;
                 
-                let response = await loggedAxios({
+                let response = await retryableAxios({
                     url: 'https://api.brightdata.com/request',
                     method: 'POST',
                     data: {
@@ -1113,7 +1140,7 @@ addTool({
     +'CAPTCHA.',
     parameters: z.object({url: z.string().url()}),
     execute: tool_fn('scrape_as_html', async({url}, ctx)=>{
-        let response = await loggedAxios({
+        let response = await retryableAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -1142,7 +1169,7 @@ addTool({
         ),
     }),
     execute: tool_fn('extract', async ({ url, extraction_prompt }, ctx) => {
-        let scrape_response = await loggedAxios({
+        let scrape_response = await retryableAxios({
             url: 'https://api.brightdata.com/request',
             method: 'POST',
             data: {
@@ -1609,7 +1636,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
         description,
         parameters: z.object(parameters),
         execute: tool_fn(`web_data_${id}`, async(data, ctx)=>{
-            let trigger_response = await loggedAxios({
+            let trigger_response = await retryableAxios({
                 url: 'https://api.brightdata.com/datasets/v3/trigger',
                 params: {dataset_id, include_errors: true},
                 method: 'POST',
