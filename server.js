@@ -6,7 +6,7 @@ import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
 import {heavyOpsSemaphore} from './concurrency.js';
-import {startHeartbeat} from './heartbeat.js';
+
 import {createRequire} from 'node:module';
 import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
 import http from 'http';
@@ -157,6 +157,10 @@ if (transport_type !== 'http') {
 let server = new FastMCP({
     name: 'Bright Data',
     version: package_json.version,
+    streamKeepalive: {
+        enabled: true,
+        intervalMs: 15000,
+    },
     authenticate: transport_type === 'http' ? (request) => {
         // Get the requestId that was set at HTTP level
         const requestId = request.req?._httpRequestId || crypto.randomUUID();
@@ -941,7 +945,7 @@ addTool({
             results,
             timeout_ms: 50000,
         }, null, 2);
-    }, {heartbeat: true}),
+    }),
 });
 
 
@@ -1007,7 +1011,7 @@ addTool({
             timeout_ms: 50000,
             results,
         }, null, 2);
-    }, {heartbeat: true}),
+    }),
 });
 
 addTool({
@@ -1129,7 +1133,7 @@ addTool({
             max_matches_limit: max_matches,
             results: matches,
         }, null, 2);
-    }, {heartbeat: true}),
+    }),
 });
 
 addTool({
@@ -1152,7 +1156,7 @@ addTool({
             responseType: 'text',
         }, currentRequestId);
         return response.data;
-    }, {throttle: true, heartbeat: true}),
+    }, {throttle: true}),
 });
 
 addTool({
@@ -1209,7 +1213,7 @@ addTool({
         });
 
         return sampling_response.content.text;
-    }, {throttle: true, heartbeat: true}),
+    }, {throttle: true}),
 });
 
 addTool({
@@ -1691,7 +1695,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}} of datasets)
             }
             throw new Error(`Timeout after ${max_attempts} seconds waiting `
                 +`for data`);
-        }, {throttle: true, heartbeat: true}),
+        }, {throttle: true}),
     });
 }
 
@@ -1802,10 +1806,6 @@ function tool_fn(name, fn, options = {}){
         try {
             // Create a modified context that includes requestId for axios calls
             const modifiedCtx = { ...ctx, requestId };
-            const stopHeartbeat = options.heartbeat
-                ? startHeartbeat(ctx, typeof options.heartbeat === 'string'
-                    ? options.heartbeat : `${name} still running`)
-                : null;
             if (options.throttle)
                 await heavyOpsSemaphore.acquire();
             let result;
@@ -1814,8 +1814,6 @@ function tool_fn(name, fn, options = {}){
             } finally {
                 if (options.throttle)
                     heavyOpsSemaphore.release();
-                if (stopHeartbeat)
-                    stopHeartbeat();
             }
 
             // Debug log the MCP tool response
