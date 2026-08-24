@@ -1754,6 +1754,26 @@ if (transport_type === 'http') {
     console.error(`✅ MCP server running at http://0.0.0.0:${http_port}/mcp`);
     console.error(`Usage: Send requests with Authorization: Bearer YOUR_API_TOKEN header`);
     console.error(`Pro mode: Add ?pro_mode=true to URL`);
+
+    const debugPort = parseInt(process.env.DEBUG_PORT || '3001', 10);
+    http.createServer((req, res) => {
+        if (req.url === '/debug/heap') {
+            const mem = process.memoryUsage();
+            const mb = k => (mem[k] / 1024 / 1024).toFixed(1);
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({
+                rss_mb: +mb('rss'),
+                heap_total_mb: +mb('heapTotal'),
+                heap_used_mb: +mb('heapUsed'),
+                external_mb: +mb('external'),
+                array_buffers_mb: +mb('arrayBuffers'),
+                uptime_s: Math.floor(process.uptime()),
+            }));
+        } else {
+            res.writeHead(404).end();
+        }
+    }).listen(debugPort, '127.0.0.1');
+    console.error(`[debug] Heap stats at http://127.0.0.1:${debugPort}/debug/heap`);
 } else {
     server.start({transportType: 'stdio'});
 }
