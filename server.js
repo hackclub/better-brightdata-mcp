@@ -6,7 +6,7 @@ import {z} from 'zod';
 import axios from 'axios';
 import {tools as browser_tools} from './browser_tools.js';
 import {heavyOpsSemaphore} from './concurrency.js';
-
+import Redis from 'ioredis';
 import {createRequire} from 'node:module';
 import {appendFileSync, readFileSync, writeFileSync, existsSync, statSync} from 'fs';
 import http from 'http';
@@ -189,44 +189,19 @@ let server = new FastMCP({
 });
 let debug_stats = {tool_calls: {}, session_calls: 0, call_timestamps: []};
 
-// --- In-memory page cache (10 minutes by default) ---
-const PAGE_CACHE_TTL_MS = parseInt(process.env.PAGE_CACHE_TTL_MS || '600000', 10);
-const MAX_CACHE_SIZE = parseInt(process.env.MAX_CACHE_SIZE || '1000', 10);
-const pageCache = new Map(); // url -> { content: string, fetchedAt: number }
-
-// Clean up expired cache entries and enforce size limits
-function cleanupExpiredCache() {
-    const now = Date.now();
-    let removedCount = 0;
-    
-    // Remove expired entries
-    for (const [url, cached] of pageCache.entries()) {
-        if ((now - cached.fetchedAt) >= PAGE_CACHE_TTL_MS) {
-            pageCache.delete(url);
-            removedCount++;
-        }
-    }
-    
-    // If still too large, remove oldest entries (LRU-style)
-    if (pageCache.size > MAX_CACHE_SIZE) {
-        const entries = Array.from(pageCache.entries());
-        entries.sort((a, b) => a[1].fetchedAt - b[1].fetchedAt); // Sort by age
-        
-        const toRemove = pageCache.size - MAX_CACHE_SIZE;
-        for (let i = 0; i < toRemove; i++) {
-            pageCache.delete(entries[i][0]);
-            removedCount++;
-        }
-        console.error(`[Cache] Removed ${toRemove} oldest entries to enforce size limit`);
-    }
-    
-    if (removedCount > 0) {
-        console.error(`[Cache] Cleaned up ${removedCount} entries. Cache size: ${pageCache.size}`);
-    }
-}
-
-// Start cleanup timer (every 2 minutes for more aggressive cleanup)
-const cacheCleanupInterval = setInterval(cleanupExpiredCache, 2 * 60 * 1000);
+// --- Redis page cache ---
+const PAGE_CACHE_TTL_S = Math.floor(parseInt(process.env.PAGE_CACHE_TTL_MS || '600000', 10) / 1000);
+const REDIS_URL = process.env.REDIS_URL || 'redis://page-cache.ysws-better-brightdata-mcp.svc.cluster.local:6379';
+const redis = new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 2,
+    lazyConnect: true,
+    connectTimeout: 5000,
+});
+redis.connect().then(() => {
+    console.error(`[Cache] Connected to Redis at ${REDIS_URL}`);
+}).catch(err => {
+    console.error(`[Cache] Redis connection failed: ${err.message}. Cache disabled, all requests go to BrightData.`);
+});
 
 async function fetchMarkdownRaw(url, context_token = null, parentRequestId = null) {
     try {
@@ -256,30 +231,34 @@ async function fetchMarkdownRaw(url, context_token = null, parentRequestId = nul
 }
 
 async function getMarkdownWithCache(url, context_token = null, parentRequestId = null) {
-    const now = Date.now();
-    let cached = pageCache.get(url);
-    
-    // Immediately remove expired entries to prevent memory leaks
-    if (cached && (now - cached.fetchedAt) >= PAGE_CACHE_TTL_MS) {
-        console.error(`[Cache EXPIRED] Removing ${url} (age: ${Math.round((now - cached.fetchedAt) / 1000)}s)`);
-        pageCache.delete(url);
-        // Treat as if no cache entry exists
-        cached = null;
+    if (redis.status === 'ready') {
+        try {
+            const cached = await redis.get(url);
+            if (cached) {
+                const entry = JSON.parse(cached);
+                console.error(`[Cache HIT] ${url}`);
+                return { content: entry.content, fromCache: true, fetchedAt: entry.fetchedAt };
+            }
+        } catch (e) {
+            console.error(`[Cache] Redis read error: ${e.message}`);
+        }
     }
-    
-    if (cached) {
-        const ageSeconds = Math.round((now - cached.fetchedAt) / 1000);
-        console.error(`[Cache HIT] ${url} (age: ${ageSeconds}s, size: ${pageCache.size})`);
-        return { content: cached.content, fromCache: true, fetchedAt: cached.fetchedAt };
-    }
-    
+
     console.error(`[Cache MISS] Fetching ${url}`);
     const rawContent = await fetchMarkdownRaw(url, context_token, parentRequestId);
-    const strippedContent = stripImageLinks(rawContent); // Strip image links first
-    const processedContent = processLongLines(strippedContent); // Process long lines before caching
+    const strippedContent = stripImageLinks(rawContent);
+    const processedContent = processLongLines(strippedContent);
     const fetchedAt = Date.now();
-    pageCache.set(url, { content: processedContent, fetchedAt });
-    console.error(`[Cache SET] ${url} (size: ${pageCache.size})`);
+
+    if (redis.status === 'ready') {
+        try {
+            await redis.setex(url, PAGE_CACHE_TTL_S, JSON.stringify({ content: processedContent, fetchedAt }));
+            console.error(`[Cache SET] ${url}`);
+        } catch (e) {
+            console.error(`[Cache] Redis write error: ${e.message}`);
+        }
+    }
+
     return { content: processedContent, fromCache: false, fetchedAt };
 }
 
@@ -1006,7 +985,7 @@ addTool({
         return JSON.stringify({
             tool: 'get_page_previews',
             now: nowISO,
-            ttl_ms: PAGE_CACHE_TTL_MS,
+            ttl_s: PAGE_CACHE_TTL_S,
             max_line_length: 250,
             timeout_ms: 50000,
             results,
